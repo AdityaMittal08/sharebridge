@@ -1,75 +1,87 @@
 # daemon/dbus_interface.py
-"""
-D-Bus Interface Definition for ShareBridge Daemon.
-Handles the IPC communication between the Python backend and the GNOME JS frontend.
-"""
 import json
 import asyncio
 from typing import Dict, Any, Optional
 from dbus_next.service import ServiceInterface, method, signal
 from file_transfer import FileTransferManager
+from chat_manager import ChatManager
+from screen_share import ScreenShareManager
 
 class ShareBridgeDaemonInterface(ServiceInterface):
-    def __init__(self, name: str):
+    def __init__(self, name: str, my_peer_id: str):
         super().__init__(name)
-        # Store active peers in memory: { "peer_id": { ...peer_data... } }
+        self.my_peer_id = my_peer_id
         self.peers: Dict[str, Dict[str, Any]] = {}
-        # Will be injected by the main script
+        
         self.transfer_manager: Optional[FileTransferManager] = None
+        self.chat_manager: Optional[ChatManager] = None
+        self.screen_share: Optional[ScreenShareManager] = None
 
     @method()
     def GetPeers(self) -> 's': # type: ignore
-        """Returns a JSON string of all currently discovered peers."""
         return json.dumps(list(self.peers.values()))
 
     @signal()
     def PeerDiscovered(self, peer_json: 's') -> 's': # type: ignore
-        """Emits a signal to GNOME when a new local peer is found."""
         return peer_json
 
     @signal()
     def PeerLost(self, peer_id: 's') -> 's': # type: ignore
-        """Emits a signal to GNOME when a peer drops off the network."""
         return peer_id
 
     @signal()
     def FileProgress(self, transfer_id: 's', percentage: 'd') -> 'sd': # type: ignore
-        """Emits progress percentage to the GNOME UI. 'sd' = String, Double"""
         return [transfer_id, percentage]
+
+    @signal()
+    def NewMessage(self, peer_id: 's', message: 's') -> 'ss': # type: ignore
+        return [peer_id, message]
+
+    @signal()
+    def IncomingScreenShare(self, peer_id: 's') -> 's': # type: ignore
+        return peer_id
 
     @method()
     def SendFile(self, peer_id: 's', file_path: 's') -> 's': # type: ignore
-        """Called by GNOME UI to initiate a file send."""
-        if peer_id not in self.peers:
-            print(f"[DBus] Error: Peer {peer_id} not found in state.")
-            return "ERROR: Peer not found"
-            
-        if not self.transfer_manager:
-            return "ERROR: Transfer manager not initialized"
-
-        target_ip = self.peers[peer_id]['ip']
-        target_port = self.peers[peer_id]['port']
-        
-        # Fire-and-forget the async task so we don't block the D-Bus return thread
-        loop = asyncio.get_running_loop()
-        loop.create_task(
-            self.transfer_manager.send_file(target_ip, target_port, file_path)
+        if peer_id not in self.peers or not self.transfer_manager: return "ERROR"
+        asyncio.get_running_loop().create_task(
+            self.transfer_manager.send_file(self.peers[peer_id]['ip'], self.peers[peer_id]['port'], file_path)
         )
-        
         return "transfer_started"
 
-    # Internal methods to be called by the ZeroConf network listener
+    @method()
+    def SendMessage(self, peer_id: 's', message: 's') -> 'b': # type: ignore
+        if peer_id not in self.peers or not self.chat_manager: return False
+        asyncio.get_running_loop().create_task(
+            self.chat_manager.send_message(self.peers[peer_id]['ip'], peer_id, self.my_peer_id, message)
+        )
+        return True
+
+    @method()
+    async def GetChatHistory(self, peer_id: 's') -> 's': # type: ignore
+        if not self.chat_manager: return "[]"
+        return await self.chat_manager.db.get_chat_history(peer_id)
+
+    @method()
+    def StartScreenShare(self, peer_id: 's') -> 'b': # type: ignore
+        if peer_id not in self.peers or not self.screen_share: return False
+        asyncio.get_running_loop().create_task(
+            self.screen_share.start_broadcasting(self.peers[peer_id]['ip'], self.my_peer_id)
+        )
+        return True
+
+    @method()
+    def StopScreenShare(self) -> 'b': # type: ignore
+        if self.screen_share:
+            self.screen_share.stop_stream()
+        return True
+
     def register_peer(self, peer_data: Dict[str, Any]) -> None:
-        """Saves peer to state and emits D-Bus signal."""
-        peer_id = peer_data['id']
-        if peer_id not in self.peers:
-            self.peers[peer_id] = peer_data
+        if peer_data['id'] not in self.peers:
+            self.peers[peer_data['id']] = peer_data
             self.PeerDiscovered(json.dumps(peer_data))
-            print(f"[Daemon] Emitted PeerDiscovered for {peer_data['name']}")
 
     def unregister_peer(self, peer_id: str) -> None:
-        """Removes peer from state and emits D-Bus signal."""
         if peer_id in self.peers:
             del self.peers[peer_id]
             self.PeerLost(peer_id)
-            print(f"[Daemon] Emitted PeerLost for {peer_id}")

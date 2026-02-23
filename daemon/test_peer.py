@@ -5,49 +5,46 @@ import socket
 import os
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceInfo
 from file_transfer import FileTransferManager
+from screen_share import ScreenShareManager
 
 SERVICE_TYPE = "_sharebridge._tcp.local."
-LISTEN_PORT = 49153  # Port 49153 so it doesn't collide with the main daemon's 49152
-MY_PEER_ID = "device-test-peer-001"
-MY_NAME = "Test Laptop (Simulator)"
+LISTEN_PORT = 49153
+SIGNALING_PORT = 49157  # Offset port to avoid crashing the main daemon
 
 async def main():
     print("--- SHAREBRIDGE TEST PEER ---")
     
-    # 1. Start the File Transfer Server
-    # Save files to a separate folder so we can easily see the transfer worked
-    download_dir = os.path.join(os.path.expanduser("~"), "Downloads", "ShareBridge_Test")
-    transfer_manager = FileTransferManager(
-        download_dir=download_dir,
-        progress_callback=lambda t_id, pct: print(f"[TestPeer] Receiving: {pct:.1f}%")
-    )
-    
-    server = await transfer_manager.start_server('0.0.0.0', LISTEN_PORT)
-    print(f"✅ Listening for incoming files on port {LISTEN_PORT}...")
-    print(f"📂 Saving received files to: {download_dir}")
+    # 1. File Transfer Server
+    dl_dir = os.path.expanduser("~/Downloads/ShareBridge_Test")
+    tm = FileTransferManager(dl_dir, lambda t, p: print(f"[TestPeer] File: {p:.1f}%"))
+    fs = await tm.start_server('0.0.0.0', LISTEN_PORT)
+    print(f"✅ File Server listening on {LISTEN_PORT}")
 
-    # 2. Broadcast presence via mDNS
+    # 2. WebRTC Server
+    sm = ScreenShareManager(lambda p: print(f"📺 Incoming video from {p}!"))
+    ws = await sm.start_signaling_server('0.0.0.0', SIGNALING_PORT)
+    print(f"✅ WebRTC Server listening on {SIGNALING_PORT}")
+
+    # 3. mDNS Broadcast
     aio_zc = AsyncZeroconf()
-    local_ip = '127.0.0.1' # Loopback for local testing
-    
     service_info = AsyncServiceInfo(
-        SERVICE_TYPE,
-        f"{MY_PEER_ID}.{SERVICE_TYPE}",
-        addresses=[socket.inet_aton(local_ip)],
-        port=LISTEN_PORT,
-        properties={'name': MY_NAME.encode('utf-8')}
+        SERVICE_TYPE, f"device-test-peer-001.{SERVICE_TYPE}",
+        addresses=[socket.inet_aton('127.0.0.1')], port=LISTEN_PORT,
+        properties={'name': b'Test Laptop (Simulator)'}
     )
     
     await aio_zc.async_register_service(service_info)
-    print(f"📡 Broadcasting as '{MY_NAME}' via mDNS...")
+    print("📡 Broadcasting via mDNS...")
 
     try:
         await asyncio.Future()
     except KeyboardInterrupt:
-        print("\nShutting down test peer...")
+        pass
     finally:
-        server.close()
-        await server.wait_closed()
+        fs.close()
+        ws.close()
+        await fs.wait_closed()
+        await ws.wait_closed()
         await aio_zc.async_unregister_service(service_info)
         await aio_zc.async_close()
 
