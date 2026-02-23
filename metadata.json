@@ -1,0 +1,15 @@
+{
+  "uuid": "sharebridge@adishare.com",
+  "name": "ShareBridge",
+  "description": "P2P collaboration suite with LAN file transfer, zero-config chat, and WebRTC screen sharing.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49"
+  ],
+  "url": "https://github.com/AdityaMittal08/sharebridge",
+  "settings-schema": "org.gnome.shell.extensions.sharebridge",
+  "version": 1
+}
