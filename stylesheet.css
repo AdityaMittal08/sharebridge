@@ -1,1 +1,117 @@
-/* Add your custom extension styling here */
+/* Container for the sliding side panel */
+.sharebridge-side-panel {
+    background-color: #242424;
+    border-left: 1px solid #1e1e1e;
+    box-shadow: -4px 0px 10px rgba(0, 0, 0, 0.5);
+    color: white;
+}
+
+/* Header areas */
+.sb-header {
+    padding: 15px;
+    background-color: #1e1e1e;
+    border-bottom: 1px solid #3d3d3d;
+}
+.sb-header-title {
+    font-weight: bold;
+    font-size: 1.2em;
+    text-align: center;
+}
+
+/* Buttons */
+.sb-icon-button {
+    padding: 6px;
+    border-radius: 50%;
+}
+.sb-icon-button:hover { background-color: #3d3d3d; }
+
+.sb-btn-primary {
+    background-color: #3584e4;
+    color: white;
+    border-radius: 6px;
+    padding: 10px 15px;
+    font-weight: bold;
+    text-align: center;
+}
+.sb-btn-primary:hover, .sb-btn-primary:focus { background-color: #1a5fb4; }
+
+.sb-btn-danger {
+    background-color: #e01b24;
+    color: white;
+    border-radius: 6px;
+    padding: 10px 15px;
+    font-weight: bold;
+    text-align: center;
+}
+.sb-btn-danger:hover, .sb-btn-danger:focus { background-color: #c01c28; }
+
+/* Peer List */
+.sb-peer-list { padding: 10px; }
+.sb-peer-row {
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 5px;
+    background-color: #2d2d2d;
+    transition-duration: 150ms;
+}
+.sb-peer-row:hover, .sb-peer-row:focus { background-color: #3d3d3d; }
+.sb-peer-name { font-weight: bold; font-size: 1.1em; }
+
+/* Navigation Bar */
+.sb-nav-bar {
+    padding: 5px;
+    background-color: #1e1e1e;
+    border-bottom: 1px solid #3d3d3d;
+}
+.sb-nav-tab {
+    padding: 10px;
+    border-radius: 6px;
+    font-weight: bold;
+    text-align: center;
+}
+.sb-nav-tab:hover { background-color: #3d3d3d; }
+.sb-nav-tab:checked {
+    background-color: #3584e4;
+    color: white;
+}
+
+/* Feature Views Content Area */
+.sb-content-area { padding: 15px; }
+
+/* Chat Bubbles */
+.sb-chat-box { padding: 10px; spacing: 8px; }
+.sb-chat-bubble-out {
+    background-color: #3584e4;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 12px 12px 0px 12px;
+    max-width: 300px;
+}
+.sb-chat-bubble-in {
+    background-color: #3d3d3d;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 12px 12px 12px 0px;
+    max-width: 300px;
+}
+.sb-chat-input {
+    padding: 10px;
+    border-radius: 18px;
+    border: 1px solid #555;
+    background-color: #1e1e1e;
+    color: white;
+    margin-top: 10px;
+}
+
+/* Progress Bar */
+.sb-progress-bg {
+    height: 10px;
+    border-radius: 5px;
+    background-color: #3d3d3d;
+    margin-top: 10px;
+}
+.sb-progress-fill {
+    height: 10px;
+    border-radius: 5px;
+    background-color: #3584e4;
+}

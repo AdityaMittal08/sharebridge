@@ -3,9 +3,8 @@ import Gio from 'gi://Gio';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-import { ShareBridgePanel } from './src/panel.js';
+import { ShareBridgePanel, SidePanel } from './src/panel.js';
 import { ShareBridgeIndicator } from './src/quickSettings.js';
-import { ChatDialog } from './src/chatDialog.js';
 
 const DBUS_INTERFACE_XML = `
 <node>
@@ -41,49 +40,24 @@ export default class ShareBridgeExtension extends Extension {
         super(metadata);
         this._indicator = null;
         this._quickSettings = null;
+        this._sidePanel = null;
         this._daemonProxy = null;
         this._signalIds = [];
         this._peerCount = 0;
-        this._activeChatDialog = null; 
     }
 
     enable() {
         console.log(`[ShareBridge] Enabling extension ${this.uuid}`);
 
+        // 1. Setup Top Panel Indicator
         this._indicator = new ShareBridgePanel();
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
+        // 2. Setup Quick Settings Toggle
         this._quickSettings = new ShareBridgeIndicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._quickSettings);
 
-        this._indicator.connect('file-send-requested', (source, peerId, filePath) => {
-            if (this._daemonProxy) {
-                Main.notify('ShareBridge', `Initiating file transfer...`);
-                this._daemonProxy.SendFileRemote(peerId, filePath, () => {});
-            }
-        });
-
-        this._indicator.connect('chat-requested', (source, peerId, peerName) => {
-            if (this._activeChatDialog) this._activeChatDialog.close();
-            this._activeChatDialog = new ChatDialog(peerId, peerName, this._daemonProxy);
-            this._activeChatDialog.connect('closed', () => { this._activeChatDialog = null; });
-            this._activeChatDialog.open();
-        });
-
-        this._indicator.connect('screen-share-requested', (source, peerId) => {
-            if (this._daemonProxy) {
-                Main.notify('ShareBridge', 'Starting screen share. Please select the screen to broadcast when prompted by GNOME.');
-                this._daemonProxy.StartScreenShareRemote(peerId, () => {});
-            }
-        });
-
-        this._indicator.connect('screen-share-stop-requested', () => {
-            if (this._daemonProxy) {
-                this._daemonProxy.StopScreenShareRemote(() => {});
-                Main.notify('ShareBridge', 'Screen sharing stopped.');
-            }
-        });
-
+        // 3. Setup Backend D-Bus Proxy
         try {
             this._daemonProxy = new DaemonProxyWrapper(
                 Gio.DBus.session,
@@ -91,26 +65,57 @@ export default class ShareBridgeExtension extends Extension {
                 '/org/gnome/shell/extensions/sharebridge/Daemon'
             );
 
+            // 4. Initialize the new Slide Panel Drawer
+            this._sidePanel = new SidePanel(this._daemonProxy);
+
+            // Link Top Panel icon click to Drawer toggle
+            this._indicator.connect('toggle-side-panel', () => {
+                this._sidePanel.toggle();
+            });
+
+            // 5. Wire D-Bus signals to Drawer Methods
             this._signalIds.push(
-                this._daemonProxy.connectSignal('PeerDiscovered', (proxy, senderName, [peerJson]) => this._addPeerToUI(JSON.parse(peerJson))),
-                this._daemonProxy.connectSignal('PeerLost', (proxy, senderName, [peerId]) => this._removePeerFromUI(peerId)),
+                this._daemonProxy.connectSignal('PeerDiscovered', (proxy, senderName, [peerJson]) => this._addPeer(JSON.parse(peerJson))),
+                this._daemonProxy.connectSignal('PeerLost', (proxy, senderName, [peerId]) => this._removePeer(peerId)),
+                
                 this._daemonProxy.connectSignal('FileProgress', (proxy, senderName, [transferId, percentage]) => {
+                    this._sidePanel.updateFileProgress(transferId, percentage);
                     if (percentage >= 100) Main.notify('ShareBridge', 'File transfer successfully completed!');
                 }),
+                
                 this._daemonProxy.connectSignal('NewMessage', (proxy, senderName, [peerId, message]) => {
-                    if (this._activeChatDialog && this._activeChatDialog.peerId === peerId) {
-                        this._activeChatDialog.addMessage(false, message);
+                    // Inject message into Side Panel chat box (if open), else trigger system notification
+                    if (this._sidePanel.isOpen && this._sidePanel.currentPeer && this._sidePanel.currentPeer.id === peerId) {
+                        this._sidePanel.addChatMessage(peerId, false, message);
                     } else {
                         Main.notify('ShareBridge Message', message);
                     }
                 }),
+                
                 this._daemonProxy.connectSignal('IncomingScreenShare', (proxy, senderName, [peerId]) => {
                     Main.notify('ShareBridge', 'Incoming screen share! Opening viewer window...');
                 })
             );
 
+            // Initial fetch of existing peers
             this._daemonProxy.GetPeersRemote((result, error) => {
-                if (result && result[0]) JSON.parse(result[0]).forEach(peer => this._addPeerToUI(peer));
+                if (error) {
+                    console.error(`[ShareBridge] D-Bus GetPeers Error: ${error.message}`);
+                    return;
+                }
+                if (result && result[0]) {
+                    try {
+                        let parsedData = JSON.parse(result[0]);
+                        console.log(`[ShareBridge] Parsed GetPeers raw data successfully.`);
+                        
+                        // Force data into an array whether Python sent a list or a dictionary
+                        let peersArray = Array.isArray(parsedData) ? parsedData : Object.values(parsedData);
+                        
+                        peersArray.forEach(peer => this._addPeer(peer));
+                    } catch (e) {
+                        console.error(`[ShareBridge] Error parsing or looping GetPeers: ${e.message}`);
+                    }
+                }
             });
 
         } catch (error) {
@@ -119,9 +124,9 @@ export default class ShareBridgeExtension extends Extension {
     }
 
     disable() {
-        if (this._activeChatDialog) {
-            this._activeChatDialog.close();
-            this._activeChatDialog = null;
+        if (this._sidePanel) {
+            this._sidePanel.destroy();
+            this._sidePanel = null;
         }
         if (this._daemonProxy) {
             this._signalIds.forEach(id => this._daemonProxy.disconnectSignal(id));
@@ -139,16 +144,28 @@ export default class ShareBridgeExtension extends Extension {
         this._peerCount = 0;
     }
 
-    _addPeerToUI(peerData) {
-        if (this._indicator) this._indicator.addPeer(peerData);
-        if (this._quickSettings) {
-            this._peerCount++;
-            this._quickSettings.toggle.updatePeerCount(this._peerCount);
+    _addPeer(peerData) {
+        try {
+            console.log(`[ShareBridge] Attempting to add peer: ${peerData.name}`);
+            
+            if (this._sidePanel) {
+                this._sidePanel.addPeer(peerData);
+            }
+            
+            // Added safe checks so Quick Settings doesn't crash the panel update
+            if (this._quickSettings && this._quickSettings.toggle) {
+                this._peerCount++;
+                this._quickSettings.toggle.updatePeerCount(this._peerCount);
+            }
+            
+            console.log(`[ShareBridge] Peer added successfully: ${peerData.name}`);
+        } catch (error) {
+            console.error(`[ShareBridge] Fatal error in _addPeer for ${peerData.name}: ${error.message}`);
         }
     }
 
-    _removePeerFromUI(peerId) {
-        if (this._indicator) this._indicator.removePeer(peerId);
+    _removePeer(peerId) {
+        if (this._sidePanel) this._sidePanel.removePeer(peerId);
         if (this._quickSettings && this._peerCount > 0) {
             this._peerCount--;
             this._quickSettings.toggle.updatePeerCount(this._peerCount);
