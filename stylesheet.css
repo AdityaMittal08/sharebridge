@@ -78,31 +78,6 @@
 /* Feature Views Content Area */
 .sb-content-area { padding: 15px; }
 
-/* Chat Bubbles */
-.sb-chat-box { padding: 10px; spacing: 8px; }
-.sb-chat-bubble-out {
-    background-color: #3584e4;
-    color: white;
-    padding: 8px 12px;
-    border-radius: 12px 12px 0px 12px;
-    max-width: 300px;
-}
-.sb-chat-bubble-in {
-    background-color: #3d3d3d;
-    color: white;
-    padding: 8px 12px;
-    border-radius: 12px 12px 12px 0px;
-    max-width: 300px;
-}
-.sb-chat-input {
-    padding: 10px;
-    border-radius: 18px;
-    border: 1px solid #555;
-    background-color: #1e1e1e;
-    color: white;
-    margin-top: 10px;
-}
-
 /* Progress Bar */
 .sb-progress-bg {
     height: 10px;
