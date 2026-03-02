@@ -1,23 +1,19 @@
 // extension.js
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { ShareBridgePanel, SidePanel } from './src/panel.js';
 import { ShareBridgeIndicator } from './src/quickSettings.js';
 
+// Removed all Chat methods and signals
 const DBUS_INTERFACE_XML = `
 <node>
   <interface name="org.gnome.shell.extensions.sharebridge.Daemon">
     <method name="GetPeers"><arg type="s" name="peers_json" direction="out"/></method>
     <method name="SendFile">
       <arg type="s" name="peer_id" direction="in"/><arg type="s" name="file_path" direction="in"/><arg type="s" name="transfer_id" direction="out"/>
-    </method>
-    <method name="SendMessage">
-      <arg type="s" name="peer_id" direction="in"/><arg type="s" name="message" direction="in"/><arg type="b" name="success" direction="out"/>
-    </method>
-    <method name="GetChatHistory">
-      <arg type="s" name="peer_id" direction="in"/><arg type="s" name="history_json" direction="out"/>
     </method>
     <method name="StartScreenShare">
       <arg type="s" name="peer_id" direction="in"/><arg type="b" name="success" direction="out"/>
@@ -28,7 +24,6 @@ const DBUS_INTERFACE_XML = `
     <signal name="PeerDiscovered"><arg type="s" name="peer_json"/></signal>
     <signal name="PeerLost"><arg type="s" name="peer_id"/></signal>
     <signal name="FileProgress"><arg type="s" name="transfer_id"/><arg type="d" name="percentage"/></signal>
-    <signal name="NewMessage"><arg type="s" name="peer_id"/><arg type="s" name="message"/></signal>
     <signal name="IncomingScreenShare"><arg type="s" name="peer_id"/></signal>
   </interface>
 </node>`;
@@ -44,20 +39,29 @@ export default class ShareBridgeExtension extends Extension {
         this._daemonProxy = null;
         this._signalIds = [];
         this._peerCount = 0;
+        this._initTimeoutId = null;
     }
 
     enable() {
         console.log(`[ShareBridge] Enabling extension ${this.uuid}`);
 
-        // 1. Setup Top Panel Indicator
         this._indicator = new ShareBridgePanel();
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-        // 2. Setup Quick Settings Toggle
         this._quickSettings = new ShareBridgeIndicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._quickSettings);
 
-        // 3. Setup Backend D-Bus Proxy
+        // Start the Python Daemon
+        this._startDaemon();
+
+        // Delay D-Bus binding slightly to give Python time to acquire the bus name
+        this._initTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+            this._initializeDBus();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _initializeDBus() {
         try {
             this._daemonProxy = new DaemonProxyWrapper(
                 Gio.DBus.session,
@@ -65,15 +69,12 @@ export default class ShareBridgeExtension extends Extension {
                 '/org/gnome/shell/extensions/sharebridge/Daemon'
             );
 
-            // 4. Initialize the new Slide Panel Drawer
             this._sidePanel = new SidePanel(this._daemonProxy);
 
-            // Link Top Panel icon click to Drawer toggle
             this._indicator.connect('toggle-side-panel', () => {
                 this._sidePanel.toggle();
             });
 
-            // 5. Wire D-Bus signals to Drawer Methods
             this._signalIds.push(
                 this._daemonProxy.connectSignal('PeerDiscovered', (proxy, senderName, [peerJson]) => this._addPeer(JSON.parse(peerJson))),
                 this._daemonProxy.connectSignal('PeerLost', (proxy, senderName, [peerId]) => this._removePeer(peerId)),
@@ -88,23 +89,15 @@ export default class ShareBridgeExtension extends Extension {
                 })
             );
 
-            // Initial fetch of existing peers
             this._daemonProxy.GetPeersRemote((result, error) => {
-                if (error) {
-                    console.error(`[ShareBridge] D-Bus GetPeers Error: ${error.message}`);
-                    return;
-                }
+                if (error) return console.error(`[ShareBridge] D-Bus GetPeers Error: ${error.message}`);
                 if (result && result[0]) {
                     try {
                         let parsedData = JSON.parse(result[0]);
-                        console.log(`[ShareBridge] Parsed GetPeers raw data successfully.`);
-                        
-                        // Force data into an array whether Python sent a list or a dictionary
                         let peersArray = Array.isArray(parsedData) ? parsedData : Object.values(parsedData);
-                        
                         peersArray.forEach(peer => this._addPeer(peer));
                     } catch (e) {
-                        console.error(`[ShareBridge] Error parsing or looping GetPeers: ${e.message}`);
+                        console.error(`[ShareBridge] Error parsing GetPeers: ${e.message}`);
                     }
                 }
             });
@@ -115,6 +108,10 @@ export default class ShareBridgeExtension extends Extension {
     }
 
     disable() {
+        if (this._initTimeoutId) {
+            GLib.source_remove(this._initTimeoutId);
+            this._initTimeoutId = null;
+        }
         if (this._sidePanel) {
             this._sidePanel.destroy();
             this._sidePanel = null;
@@ -132,17 +129,20 @@ export default class ShareBridgeExtension extends Extension {
             this._quickSettings.destroy();
             this._quickSettings = null;
         }
+        this._stopDaemon();
         this._peerCount = 0;
     }
 
     _startDaemon() {
         try {
-            // Path to your daemon script relative to the extension folder
             const daemonPath = this.dir.get_child('daemon').get_child('sharebridge-daemon.py').get_path();
+            const venvPython = this.dir.get_child('daemon').get_child('venv').get_child('bin').get_child('python3').get_path();
             
-            // Launch the daemon as a subprocess
+            // Prefer virtual environment python over system python to ensure dependencies are found
+            const pythonExec = GLib.file_test(venvPython, GLib.FileTest.EXISTS) ? venvPython : 'python3';
+
             this._daemonProc = Gio.Subprocess.new(
-                ['python3', daemonPath],
+                [pythonExec, daemonPath],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
             );
             console.log('[ShareBridge] Daemon started successfully.');
@@ -160,22 +160,10 @@ export default class ShareBridgeExtension extends Extension {
     }
 
     _addPeer(peerData) {
-        try {
-            console.log(`[ShareBridge] Attempting to add peer: ${peerData.name}`);
-            
-            if (this._sidePanel) {
-                this._sidePanel.addPeer(peerData);
-            }
-            
-            // Added safe checks so Quick Settings doesn't crash the panel update
-            if (this._quickSettings && this._quickSettings.toggle) {
-                this._peerCount++;
-                this._quickSettings.toggle.updatePeerCount(this._peerCount);
-            }
-            
-            console.log(`[ShareBridge] Peer added successfully: ${peerData.name}`);
-        } catch (error) {
-            console.error(`[ShareBridge] Fatal error in _addPeer for ${peerData.name}: ${error.message}`);
+        if (this._sidePanel) this._sidePanel.addPeer(peerData);
+        if (this._quickSettings && this._quickSettings.toggle) {
+            this._peerCount++;
+            this._quickSettings.toggle.updatePeerCount(this._peerCount);
         }
     }
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.sharebridge" path="/org/gnome/shell/extensions/sharebridge/">
+    <key name="download-dir" type="s">
+      <default>""</default>
+      <summary>Download Directory</summary>
+      <description>The absolute path where ShareBridge saves received files.</description>
+    </key>
+  </schema>
+</schemalist>
