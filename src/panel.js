@@ -193,9 +193,8 @@ export class SidePanel {
             this.contentStack = new St.BoxLayout({ vertical: true, x_expand: true, y_expand: true });
 
             const tabs = [
-                { id: 'chat', label: '💬 Chat', buildFn: () => this._safeBuildView('_buildChat', peer) },
-                { id: 'file', label: '📁 Files', buildFn: () => this._safeBuildView('_buildFileTransfer', peer) },
-                { id: 'screen', label: '🖥️ Screen', buildFn: () => this._safeBuildView('_buildScreenShare', peer) }
+                { id: 'file', label: 'Files Share', buildFn: () => this._safeBuildView('_buildFileTransfer', peer) },
+                { id: 'screen', label: 'Screen Share', buildFn: () => this._safeBuildView('_buildScreenShare', peer) }
             ];
 
             let activeTabBtn = null;
@@ -212,8 +211,8 @@ export class SidePanel {
                 });
                 navBar.add_child(btn);
                 
-                // Default to Chat tab
-                if (tab.id === 'chat') {
+                // Default to File tab
+                if (tab.id === 'file') {
                     activeTabBtn = btn;
                     btn.add_style_pseudo_class('checked');
                     this.contentStack.add_child(tab.buildFn());
@@ -310,84 +309,6 @@ export class SidePanel {
         }
     }
 
-    // --- CHAT TAB ---
-    // --- CHAT TAB ---
-    _buildChat(peer) {
-        const layout = new St.BoxLayout({ vertical: true, style_class: 'sb-content-area', x_expand: true, y_expand: true });
-        
-        // Safely extract the ID regardless of what Python named the key
-        const targetId = peer.id || peer.device_id || peer.name;
-
-        this.chatScrollView = new St.ScrollView({ x_expand: true, y_expand: true, vscrollbar_policy: St.PolicyType.AUTOMATIC });
-        this.chatBox = new St.BoxLayout({ vertical: true, style_class: 'sb-chat-box', x_expand: true, y_expand: true });
-        
-        // FIX 1: Use set_child instead of add_child for GNOME 45+ ScrollViews
-        this.chatScrollView.set_child(this.chatBox);
-        layout.add_child(this.chatScrollView);
-
-        const input = new St.Entry({ hint_text: 'Type a message...', style_class: 'sb-chat-input', x_expand: true, can_focus: true });
-        input.clutter_text.connect('activate', () => {
-            const text = input.get_text().trim();
-            if (!text) return;
-            input.set_text('');
-
-            // FIX 2: Use the safe targetId
-            this.daemonProxy.SendMessageRemote(targetId, text, (result, err) => {
-                if (err || (result && result[0] === false)) {
-                    this.addChatMessage(targetId, true, `[Failed] ${text}`);
-                } else {
-                    this.addChatMessage(targetId, true, text);
-                }
-            });
-        });
-        layout.add_child(input);
-
-        // Load History
-        if (this.daemonProxy) {
-            this.daemonProxy.GetChatHistoryRemote(targetId, (result, err) => {
-                if (err) {
-                    console.error(`[ShareBridge] History Error: ${err.message}`);
-                } else if (result && result[0]) {
-                    JSON.parse(result[0]).forEach(msg => this.addChatMessage(targetId, msg.is_outgoing, msg.content, true));
-                    this._scrollToBottom();
-                }
-            });
-        }
-
-        return layout;
-    }
-
-    addChatMessage(targetId, isOutgoing, text, skipScroll = false) {
-        // Only render if we are currently looking at this peer's chat
-        if (!this.currentPeer || !this.chatBox) return;
-        
-        const currentPeerId = this.currentPeer.id || this.currentPeer.device_id || this.currentPeer.name;
-        if (currentPeerId !== targetId) return;
-
-        const align = isOutgoing ? Clutter.ActorAlign.END : Clutter.ActorAlign.START;
-        const styleClass = isOutgoing ? 'sb-chat-bubble-out' : 'sb-chat-bubble-in';
-
-        const bubble = new St.Label({ text: text, x_align: align, style_class: styleClass });
-        bubble.clutter_text.line_wrap = true;
-        bubble.clutter_text.line_wrap_mode = 0; 
-
-        const wrapper = new St.BoxLayout({ x_expand: true, x_align: align });
-        wrapper.add_child(bubble);
-        this.chatBox.add_child(wrapper);
-
-        if (!skipScroll) this._scrollToBottom();
-    }
-
-    _scrollToBottom() {
-        if (!this.chatScrollView) return;
-        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            const adjustment = this.chatScrollView.vscroll.adjustment;
-            adjustment.value = adjustment.upper - adjustment.page_size;
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    // --- SCREEN SHARE TAB ---
     // --- SCREEN SHARE TAB ---
     _buildScreenShare(peer) {
         const layout = new St.BoxLayout({ vertical: true, style_class: 'sb-content-area', x_expand: true, y_expand: true, x_align: Clutter.ActorAlign.CENTER });

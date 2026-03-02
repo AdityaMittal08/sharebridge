@@ -11,10 +11,7 @@ from zeroconf.asyncio import AsyncZeroconf, AsyncServiceInfo, AsyncServiceBrowse
 from dbus_interface import ShareBridgeDaemonInterface
 from network_server import PeerListener, SERVICE_TYPE
 from file_transfer import FileTransferManager
-from database import DatabaseManager
-from chat_manager import ChatManager, CHAT_PORT
 from screen_share import ScreenShareManager
-from crypto_manager import CryptoManager
 
 MY_PEER_ID = f"device-{uuid.getnode()}"
 MY_NAME = os.getlogin().capitalize()
@@ -23,14 +20,6 @@ LISTEN_PORT = 49152
 async def main() -> None:
     print("[Daemon] Starting ShareBridge Daemon...")
     loop = asyncio.get_running_loop()
-
-    # 1. Initialize E2EE Crypto Engine
-    crypto = CryptoManager()
-    print(f"[Crypto] Generated X25519 Public Key: {crypto.get_public_key_b64()[:15]}...")
-
-    db_path = os.path.expanduser("~/.local/share/sharebridge@adishare.com/data.db")
-    db = DatabaseManager(db_path)
-    await db.init_db()
 
     bus = await MessageBus().connect()
     dbus_interface = ShareBridgeDaemonInterface('org.gnome.shell.extensions.sharebridge.Daemon', MY_PEER_ID)
@@ -41,10 +30,6 @@ async def main() -> None:
     transfer_manager = FileTransferManager(download_dir, lambda t_id, pct: dbus_interface.FileProgress(t_id, float(pct)))
     dbus_interface.transfer_manager = transfer_manager
     file_server = await transfer_manager.start_server('0.0.0.0', LISTEN_PORT)
-
-    chat_manager = ChatManager(db, lambda p_id, msg: dbus_interface.NewMessage(p_id, msg), crypto)
-    dbus_interface.chat_manager = chat_manager
-    chat_server = await chat_manager.start_server('0.0.0.0', CHAT_PORT)
 
     screen_share = ScreenShareManager(lambda p_id: dbus_interface.IncomingScreenShare(p_id))
     dbus_interface.screen_share = screen_share
@@ -60,28 +45,18 @@ async def main() -> None:
     finally:
         s.close()
 
-    # 2. Inject Public Key into mDNS Broadcast
+    # Inject into mDNS Broadcast
     service_info = AsyncServiceInfo(
         SERVICE_TYPE, f"{MY_PEER_ID}.{SERVICE_TYPE}",
         addresses=[socket.inet_aton(local_ip)], port=LISTEN_PORT,
         properties={
-            'name': MY_NAME.encode('utf-8'),
-            'pub_key': crypto.get_public_key_b64().encode('utf-8')
+            'name': MY_NAME.encode('utf-8')
         }
     )
     
     await aio_zc.async_register_service(service_info)
     
-    # 3. Intercept peer discovery to perform Diffie-Hellman Key Exchange
     def on_peer_discovered(peer_data: Dict[str, Any]):
-        peer_id = peer_data['id']
-        pub_key_b64 = peer_data.get('pub_key')
-        
-        if pub_key_b64:
-            crypto.derive_shared_key(peer_id, pub_key_b64)
-        else:
-            print(f"[Crypto] Warning: Peer {peer_id} did not broadcast a public key.")
-            
         dbus_interface.register_peer(peer_data)
 
     listener = PeerListener(loop, on_peer_discovered, dbus_interface.unregister_peer)
@@ -94,10 +69,8 @@ async def main() -> None:
         pass
     finally:
         file_server.close()
-        chat_server.close()
         webrtc_server.close()
         await file_server.wait_closed()
-        await chat_server.wait_closed()
         await webrtc_server.wait_closed()
         await aio_zc.async_unregister_service(service_info)
         await aio_zc.async_close()

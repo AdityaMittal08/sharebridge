@@ -4,7 +4,6 @@ import asyncio
 from typing import Dict, Any, Optional
 from dbus_next.service import ServiceInterface, method, signal
 from file_transfer import FileTransferManager
-from chat_manager import ChatManager
 from screen_share import ScreenShareManager
 
 class ShareBridgeDaemonInterface(ServiceInterface):
@@ -14,7 +13,6 @@ class ShareBridgeDaemonInterface(ServiceInterface):
         self.peers: Dict[str, Dict[str, Any]] = {}
         
         self.transfer_manager: Optional[FileTransferManager] = None
-        self.chat_manager: Optional[ChatManager] = None
         self.screen_share: Optional[ScreenShareManager] = None
 
     @method()
@@ -34,10 +32,6 @@ class ShareBridgeDaemonInterface(ServiceInterface):
         return [transfer_id, percentage]
 
     @signal()
-    def NewMessage(self, peer_id: 's', message: 's') -> 'ss': # type: ignore
-        return [peer_id, message]
-
-    @signal()
     def IncomingScreenShare(self, peer_id: 's') -> 's': # type: ignore
         return peer_id
 
@@ -48,19 +42,6 @@ class ShareBridgeDaemonInterface(ServiceInterface):
             self.transfer_manager.send_file(self.peers[peer_id]['ip'], self.peers[peer_id]['port'], file_path)
         )
         return "transfer_started"
-
-    @method()
-    def SendMessage(self, peer_id: 's', message: 's') -> 'b': # type: ignore
-        if peer_id not in self.peers or not self.chat_manager: return False
-        asyncio.get_running_loop().create_task(
-            self.chat_manager.send_message(self.peers[peer_id]['ip'], peer_id, self.my_peer_id, message)
-        )
-        return True
-
-    @method()
-    async def GetChatHistory(self, peer_id: 's') -> 's': # type: ignore
-        if not self.chat_manager: return "[]"
-        return await self.chat_manager.db.get_chat_history(peer_id)
 
     @method()
     def StartScreenShare(self, peer_id: 's') -> 'b': # type: ignore

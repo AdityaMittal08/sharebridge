@@ -83,15 +83,6 @@ export default class ShareBridgeExtension extends Extension {
                     if (percentage >= 100) Main.notify('ShareBridge', 'File transfer successfully completed!');
                 }),
                 
-                this._daemonProxy.connectSignal('NewMessage', (proxy, senderName, [peerId, message]) => {
-                    // Inject message into Side Panel chat box (if open), else trigger system notification
-                    if (this._sidePanel.isOpen && this._sidePanel.currentPeer && this._sidePanel.currentPeer.id === peerId) {
-                        this._sidePanel.addChatMessage(peerId, false, message);
-                    } else {
-                        Main.notify('ShareBridge Message', message);
-                    }
-                }),
-                
                 this._daemonProxy.connectSignal('IncomingScreenShare', (proxy, senderName, [peerId]) => {
                     Main.notify('ShareBridge', 'Incoming screen share! Opening viewer window...');
                 })
