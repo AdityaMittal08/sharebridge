@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional
 from dbus_next.service import ServiceInterface, method, signal
 from file_transfer import FileTransferManager
 from screen_share import ScreenShareManager
+import uuid
 
 class ShareBridgeDaemonInterface(ServiceInterface):
     def __init__(self, name: str, my_peer_id: str):
@@ -38,10 +39,24 @@ class ShareBridgeDaemonInterface(ServiceInterface):
     @method()
     def SendFile(self, peer_id: 's', file_path: 's') -> 's': # type: ignore
         if peer_id not in self.peers or not self.transfer_manager: return "ERROR"
-        asyncio.get_running_loop().create_task(
-            self.transfer_manager.send_file(self.peers[peer_id]['ip'], self.peers[peer_id]['port'], file_path)
-        )
-        return "transfer_started"
+        
+        # Generate the UUID for the frontend
+        transfer_id = str(uuid.uuid4())
+        
+        async def run_transfer():
+            # Yield to the event loop so DBus can send the transfer_id back to the 
+            # GNOME frontend BEFORE we start emitting progress signals.
+            await asyncio.sleep(0.1) 
+            
+            await self.transfer_manager.send_file(
+                self.peers[peer_id]['ip'], 
+                self.peers[peer_id]['port'], 
+                file_path,
+                transfer_id
+            )
+
+        asyncio.get_running_loop().create_task(run_transfer())
+        return transfer_id
 
     @method()
     def StartScreenShare(self, peer_id: 's') -> 'b': # type: ignore

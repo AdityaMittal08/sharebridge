@@ -82,10 +82,11 @@ class FileTransferManager:
             writer.close()
             await writer.wait_closed()
 
-    async def send_file(self, target_ip: str, target_port: int, file_path: str) -> str:
+    async def send_file(self, target_ip: str, target_port: int, file_path: str, transfer_id: str = None) -> str:
         """Sends a file to a target peer over a raw TCP socket."""
-        transfer_id = str(uuid.uuid4())
-        
+        if not transfer_id:
+            transfer_id = str(uuid.uuid4())
+            
         if not os.path.exists(file_path):
             print(f"[FileTransfer] File not found: {file_path}")
             return transfer_id
@@ -94,11 +95,17 @@ class FileTransferManager:
         filename = os.path.basename(file_path)
 
         print(f"[FileTransfer] Calculating hash for {filename}...")
-        sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        file_hash = sha256_hash.hexdigest()
+        
+        # Offload hashing to a thread to prevent blocking the asyncio event loop
+        def calc_hash():
+            sha256_hash = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
+
+        loop = asyncio.get_running_loop()
+        file_hash = await loop.run_in_executor(None, calc_hash)
 
         header = json.dumps({
             "filename": filename,

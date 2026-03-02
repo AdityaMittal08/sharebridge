@@ -1,9 +1,5 @@
-aiosqlite==0.22.1
-cffi==2.0.0
-cryptography==46.0.5
 dbus-next==0.2.3
 ifaddr==0.2.0
 pycairo==1.29.0
-pycparser==3.0
 PyGObject==3.50.0
 zeroconf==0.148.0

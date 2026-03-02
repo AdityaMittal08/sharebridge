@@ -256,58 +256,75 @@ export class SidePanel {
     // --- FILE TRANSFER TAB ---
     // --- FILE TRANSFER TAB ---
     _buildFileTransfer(peer) {
-        const layout = new St.BoxLayout({ vertical: true, style_class: 'sb-content-area', x_expand: true, y_expand: true });
-        
-        const sendBtn = new St.Button({ label: 'Select File to Send', style_class: 'sb-btn-primary', x_expand: true, reactive: true });
-        const progressContainer = new St.BoxLayout({ vertical: true, style: 'margin-top: 20px;', x_expand: true });
+    const layout = new St.BoxLayout({ vertical: true, style_class: 'sb-content-area', x_expand: true, y_expand: true });
+    const sendBtn = new St.Button({ label: 'Select File to Send', style_class: 'sb-btn-primary', x_expand: true, reactive: true });
+    const progressContainer = new St.BoxLayout({ vertical: true, style: 'margin-top: 20px;', x_expand: true });
 
-        // Safely extract the ID
-        const targetId = peer.id || peer.device_id || peer.name;
+    const targetId = peer.id || peer.device_id || peer.name;
 
-        sendBtn.connect('clicked', async () => {
-            const filePath = await pickFile();
-            if (filePath && this.daemonProxy) {
-                Main.notify('ShareBridge', `Initiating file transfer to ${peer.name}...`);
-                
-                // Track progress UI
-                const pBg = new St.BoxLayout({ style_class: 'sb-progress-bg', x_expand: true });
-                const pFill = new St.BoxLayout({ style_class: 'sb-progress-fill' });
-                pFill.set_width(0);
-                pBg.add_child(pFill);
-                progressContainer.add_child(new St.Label({ text: `Sending: ${filePath.split('/').pop()}`, style: 'font-size: 0.9em; margin-top:10px;' }));
-                progressContainer.add_child(pBg);
+    sendBtn.connect('clicked', async () => {
+        const filePath = await pickFile();
+        if (filePath && this.daemonProxy) {
+            Main.notify('ShareBridge', `Initiating file transfer to ${peer.name}...`);
+            
+            // NEW: Create a container for this specific transfer's UI elements
+            const transferBox = new St.BoxLayout({ vertical: true, x_expand: true });
+            
+            const pBg = new St.BoxLayout({ style_class: 'sb-progress-bg', x_expand: true });
+            const pFill = new St.BoxLayout({ style_class: 'sb-progress-fill' });
+            pFill.set_width(0);
+            pBg.add_child(pFill);
+            
+            transferBox.add_child(new St.Label({ 
+                text: `Sending: ${filePath.split('/').pop()}`, 
+                style: 'font-size: 0.9em; margin-top:10px;' 
+            }));
+            transferBox.add_child(pBg);
+            
+            progressContainer.add_child(transferBox);
 
-                // FIX: Use targetId instead of peer.id
-                this.daemonProxy.SendFileRemote(targetId, filePath, (result, err) => {
-                    if (err) {
-                        console.error(`[ShareBridge] File Transfer Error: ${err.message}`);
-                        Main.notify('ShareBridge', 'Failed to start file transfer.');
-                    } else if (result && result[0]) {
-                        const transferId = result[0]; // Capture ID returned from Python
-                        this.activeTransfers.set(transferId, pFill);
-                    }
-                });
-            }
-        });
+            this.daemonProxy.SendFileRemote(targetId, filePath, (result, err) => {
+                if (err) {
+                    console.error(`[ShareBridge] File Transfer Error: ${err.message}`);
+                    transferBox.destroy(); // Clean up UI if start fails
+                } else if (result && result[0]) {
+                    const transferId = result[0];
+                    // Store both the fill (for animation) and the box (for removal)
+                    this.activeTransfers.set(transferId, { fill: pFill, box: transferBox });
+                }
+            });
+        }
+    });
 
-        layout.add_child(sendBtn);
-        layout.add_child(progressContainer);
-        return layout;
-    }
+    layout.add_child(sendBtn);
+    layout.add_child(progressContainer);
+    return layout;
+}
 
     updateFileProgress(transferId, percentage) {
-        const pFill = this.activeTransfers.get(transferId);
-        if (pFill) {
-            // Assuming full width is roughly PANEL_WIDTH - padding (30px)
-            const maxWidth = PANEL_WIDTH - 30;
-            pFill.ease({
-                width: (percentage / 100) * maxWidth,
-                duration: 200,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD
+    const transfer = this.activeTransfers.get(transferId);
+    if (transfer) {
+        const maxWidth = PANEL_WIDTH - 30;
+        
+        // Animate the fill element
+        transfer.fill.ease({
+            width: (percentage / 100) * maxWidth,
+            duration: 200,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD
+        });
+
+        if (percentage >= 100) {
+            // Delay removal slightly so the user sees the 100% state
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+                if (transfer.box) {
+                    transfer.box.destroy();
+                }
+                this.activeTransfers.delete(transferId);
+                return GLib.SOURCE_REMOVE;
             });
-            if (percentage >= 100) this.activeTransfers.delete(transferId);
         }
     }
+}
 
     // --- SCREEN SHARE TAB ---
     _buildScreenShare(peer) {
