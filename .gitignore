@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.env/
+
+# GNOME Shell Extension
+*.zip
+schemas/gschemas.compiled
+
+# OS and IDEs
+.vscode/
+.idea/
+.DS_Store
+*.swp

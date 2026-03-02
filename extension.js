@@ -135,6 +135,30 @@ export default class ShareBridgeExtension extends Extension {
         this._peerCount = 0;
     }
 
+    _startDaemon() {
+        try {
+            // Path to your daemon script relative to the extension folder
+            const daemonPath = this.dir.get_child('daemon').get_child('sharebridge-daemon.py').get_path();
+            
+            // Launch the daemon as a subprocess
+            this._daemonProc = Gio.Subprocess.new(
+                ['python3', daemonPath],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            );
+            console.log('[ShareBridge] Daemon started successfully.');
+        } catch (e) {
+            console.error(`[ShareBridge] Failed to start daemon: ${e.message}`);
+        }
+    }
+
+    _stopDaemon() {
+        if (this._daemonProc) {
+            this._daemonProc.force_exit();
+            this._daemonProc = null;
+            console.log('[ShareBridge] Daemon stopped.');
+        }
+    }
+
     _addPeer(peerData) {
         try {
             console.log(`[ShareBridge] Attempting to add peer: ${peerData.name}`);
