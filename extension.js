@@ -72,7 +72,6 @@ export default class ShareBridgeExtension extends Extension {
                 '/org/gnome/shell/extensions/sharebridge/Daemon'
             );
 
-            // Pass the D-Bus proxy to Quick Settings to handle pause/resume
             if (this._quickSettings && this._quickSettings.toggle) {
                 this._quickSettings.toggle.setDaemonProxy(this._daemonProxy);
             }
@@ -150,10 +149,9 @@ export default class ShareBridgeExtension extends Extension {
 
             this._daemonProc = Gio.Subprocess.new(
                 [pythonExec, '-u', daemonPath],
-                0  // Changed from PIPE flags to 0 so logs go straight to the journal
+                0
             );
             
-            // Monitor the daemon to ensure it doesn't crash silently
             this._daemonProc.wait_check_async(null, (proc, res) => {
                 try {
                     if (!proc.wait_check_finish(res)) {

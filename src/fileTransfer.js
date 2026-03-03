@@ -10,7 +10,6 @@ import GLib from 'gi://GLib';
 export async function pickFile() {
     return new Promise((resolve, reject) => {
         try {
-            // Launch zenity file selection dialog
             let proc = Gio.Subprocess.new(
                 ['zenity', '--file-selection', '--title=Select File to Send via ShareBridge'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
@@ -20,10 +19,8 @@ export async function pickFile() {
                 try {
                     let [ok, stdout, stderr] = proc.communicate_utf8_finish(res);
                     if (proc.get_successful()) {
-                        // Zenity returns the path with a trailing newline
                         resolve(stdout.trim());
                     } else {
-                        // User canceled the dialog
                         resolve(null);
                     }
                 } catch (e) {

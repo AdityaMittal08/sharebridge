@@ -16,13 +16,11 @@ export default class ShareBridgePreferences extends ExtensionPreferences {
             subtitle: 'Where received files will be saved'
         });
 
-        // Use a text entry to let the user type or paste the path
         const entry = new Adw.EntryRow({ 
             title: 'Absolute Path',
             text: settings.get_string('download-dir') || GLib.get_home_dir() + '/Downloads'
         });
 
-        // Bind the text entry directly to the GSchema key
         settings.bind('download-dir', entry, 'text', Gio.SettingsBindFlags.DEFAULT);
 
         group.add(downloadDirRow);

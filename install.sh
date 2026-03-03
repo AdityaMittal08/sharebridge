@@ -9,7 +9,6 @@ echo "======================================================="
 echo " Installing ShareBridge Extension"
 echo "======================================================="
 
-# 1. Check for basic system requirements
 if ! command -v python3 &> /dev/null; then
     echo "Error: python3 could not be found. Please install it."
     exit 1
@@ -20,12 +19,10 @@ if ! command -v glib-compile-schemas &> /dev/null; then
     exit 1
 fi
 
-# 2. Clean previous installation
 echo "[1/4] Preparing extension directory..."
 rm -rf "$EXT_DIR"
 mkdir -p "$EXT_DIR"
 
-# 3. Copy files to the GNOME extensions directory
 echo "[2/4] Copying files to $EXT_DIR..."
 cp -r "$REPO_DIR/daemon" "$EXT_DIR/"
 cp -r "$REPO_DIR/schemas" "$EXT_DIR/"
@@ -35,16 +32,13 @@ cp "$REPO_DIR/metadata.json" "$EXT_DIR/"
 cp "$REPO_DIR/prefs.js" "$EXT_DIR/"
 cp "$REPO_DIR/stylesheet.css" "$EXT_DIR/"
 
-# 4. Compile the GSettings schemas
 echo "[3/4] Compiling GSettings schemas..."
 glib-compile-schemas "$EXT_DIR/schemas/"
 
-# 5. Setup Python Virtual Environment
 echo "[4/4] Setting up Python virtual environment (this may take a moment)..."
 cd "$EXT_DIR/daemon"
 python3 -m venv venv
 
-# Activate venv and install dependencies
 source venv/bin/activate
 pip install --upgrade pip setuptools wheel > /dev/null 2>&1
 pip install -r requirements.txt
