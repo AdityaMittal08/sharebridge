@@ -2,9 +2,6 @@
 import GObject from 'gi://GObject';
 import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
-/**
- * The actual pill-shaped toggle button in the Quick Settings grid.
- */
 const ShareBridgeToggle = GObject.registerClass(
     class ShareBridgeToggle extends QuickSettings.QuickToggle {
         _init() {
@@ -15,31 +12,34 @@ const ShareBridgeToggle = GObject.registerClass(
                 toggleMode: true,
             });
 
-            // Default state is active when the extension starts
             this.checked = true;
+            this._daemonProxy = null;
 
-            // Listen for the user clicking the toggle
             this.connect('clicked', () => this._onToggleClicked());
+        }
+
+        setDaemonProxy(proxy) {
+            this._daemonProxy = proxy;
         }
 
         _onToggleClicked() {
             if (this.checked) {
                 this.subtitle = 'Active';
                 console.log('[ShareBridge] Quick Toggle: Resumed network discovery');
-                // In a future step, we'll emit a D-Bus call to tell Python to resume mDNS
+                if (this._daemonProxy) this._daemonProxy.ResumeDiscoveryRemote((result, err) => {
+                    if (err) console.error(`[ShareBridge] Failed to resume: ${err.message}`);
+                });
             } else {
                 this.subtitle = 'Paused';
                 console.log('[ShareBridge] Quick Toggle: Paused network discovery');
-                // In a future step, we'll emit a D-Bus call to tell Python to stop mDNS
+                if (this._daemonProxy) this._daemonProxy.PauseDiscoveryRemote((result, err) => {
+                     if (err) console.error(`[ShareBridge] Failed to pause: ${err.message}`);
+                });
             }
         }
 
-        /**
-         * Updates the subtitle text based on current peer count.
-         * @param {number} count 
-         */
         updatePeerCount(count) {
-            if (!this.checked) return; // Don't update text if we are manually paused
+            if (!this.checked) return; 
             
             if (count === 0) {
                 this.subtitle = 'No peers found';
@@ -52,20 +52,15 @@ const ShareBridgeToggle = GObject.registerClass(
     }
 );
 
-/**
- * The system indicator container that GNOME expects us to inject.
- */
 export const ShareBridgeIndicator = GObject.registerClass(
     class ShareBridgeIndicator extends QuickSettings.SystemIndicator {
         _init() {
             super._init();
             
-            // Create our toggle and add it to the container's item list
             this._toggle = new ShareBridgeToggle();
             this.quickSettingsItems.push(this._toggle);
         }
 
-        // Expose the toggle so extension.js can send it peer count updates
         get toggle() {
             return this._toggle;
         }
