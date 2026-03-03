@@ -7,7 +7,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { ShareBridgePanel, SidePanel } from './src/panel.js';
 import { ShareBridgeIndicator } from './src/quickSettings.js';
 
-// Removed all Chat methods and signals
 const DBUS_INTERFACE_XML = `
 <node>
   <interface name="org.gnome.shell.extensions.sharebridge.Daemon">
@@ -19,6 +18,12 @@ const DBUS_INTERFACE_XML = `
       <arg type="s" name="peer_id" direction="in"/><arg type="b" name="success" direction="out"/>
     </method>
     <method name="StopScreenShare">
+      <arg type="b" name="success" direction="out"/>
+    </method>
+    <method name="PauseDiscovery">
+      <arg type="b" name="success" direction="out"/>
+    </method>
+    <method name="ResumeDiscovery">
       <arg type="b" name="success" direction="out"/>
     </method>
     <signal name="PeerDiscovered"><arg type="s" name="peer_json"/></signal>
@@ -51,10 +56,8 @@ export default class ShareBridgeExtension extends Extension {
         this._quickSettings = new ShareBridgeIndicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._quickSettings);
 
-        // Start the Python Daemon
         this._startDaemon();
 
-        // Delay D-Bus binding slightly to give Python time to acquire the bus name
         this._initTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
             this._initializeDBus();
             return GLib.SOURCE_REMOVE;
@@ -68,6 +71,11 @@ export default class ShareBridgeExtension extends Extension {
                 'org.gnome.shell.extensions.sharebridge',
                 '/org/gnome/shell/extensions/sharebridge/Daemon'
             );
+
+            // Pass the D-Bus proxy to Quick Settings to handle pause/resume
+            if (this._quickSettings && this._quickSettings.toggle) {
+                this._quickSettings.toggle.setDaemonProxy(this._daemonProxy);
+            }
 
             this._sidePanel = new SidePanel(this._daemonProxy);
 
@@ -138,16 +146,28 @@ export default class ShareBridgeExtension extends Extension {
             const daemonPath = this.dir.get_child('daemon').get_child('sharebridge-daemon.py').get_path();
             const venvPython = this.dir.get_child('daemon').get_child('venv').get_child('bin').get_child('python3').get_path();
             
-            // Prefer virtual environment python over system python to ensure dependencies are found
             const pythonExec = GLib.file_test(venvPython, GLib.FileTest.EXISTS) ? venvPython : 'python3';
 
             this._daemonProc = Gio.Subprocess.new(
-                [pythonExec, daemonPath],
-                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+                [pythonExec, '-u', daemonPath],
+                0  // Changed from PIPE flags to 0 so logs go straight to the journal
             );
+            
+            // Monitor the daemon to ensure it doesn't crash silently
+            this._daemonProc.wait_check_async(null, (proc, res) => {
+                try {
+                    if (!proc.wait_check_finish(res)) {
+                        Main.notify('ShareBridge Error', 'Daemon exited unexpectedly. Check your terminal dependencies.');
+                    }
+                } catch (e) {
+                    Main.notify('ShareBridge Error', `Daemon crashed: ${e.message}`);
+                }
+            });
+            
             console.log('[ShareBridge] Daemon started successfully.');
         } catch (e) {
             console.error(`[ShareBridge] Failed to start daemon: ${e.message}`);
+            Main.notify('ShareBridge Error', 'Failed to start the background process.');
         }
     }
 

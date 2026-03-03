@@ -14,13 +14,11 @@ gi.require_version('Gio', '2.0')
 from gi.repository import Gio
 
 # --- SCHEMA AUTO-DETECTION LOGIC ---
-# This allows the script to find the compiled schema even if XDG_DATA_DIRS isn't set
 script_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(script_dir)
 schema_path = os.path.join(parent_dir, 'schemas')
 
 if os.path.exists(os.path.join(schema_path, 'gschemas.compiled')):
-    # Inject the local schema path into the Gio search path
     source = Gio.SettingsSchemaSource.new_from_directory(schema_path, Gio.SettingsSchemaSource.get_default(), False)
     SCHEMA_ID = 'org.gnome.shell.extensions.sharebridge'
     schema_obj = source.lookup(SCHEMA_ID, True)
@@ -29,7 +27,6 @@ if os.path.exists(os.path.join(schema_path, 'gschemas.compiled')):
         sys.exit(1)
     settings = Gio.Settings.new_full(schema_obj, None, None)
 else:
-    # Fallback to system default if running inside the actual GNOME environment
     try:
         settings = Gio.Settings.new('org.gnome.shell.extensions.sharebridge')
     except Exception:
@@ -43,7 +40,6 @@ from screen_share import ScreenShareManager
 
 MY_PEER_ID = f"device-{uuid.getnode()}"
 MY_NAME = os.getlogin().capitalize()
-LISTEN_PORT = 49152
 
 def get_download_dir(settings_obj) -> str:
     path = settings_obj.get_string("download-dir")
@@ -51,6 +47,18 @@ def get_download_dir(settings_obj) -> str:
         path = os.path.expanduser("~/Downloads/ShareBridge")
     os.makedirs(path, exist_ok=True)
     return path
+
+def get_local_ip():
+    """Helper to get the primary local IP address."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
 async def main() -> None:
     print("[Daemon] Starting ShareBridge Daemon...")
@@ -62,25 +70,43 @@ async def main() -> None:
     bus.export('/org/gnome/shell/extensions/sharebridge/Daemon', dbus_interface)
     await bus.request_name('org.gnome.shell.extensions.sharebridge')
 
-    # File Transfer Setup
+    # File Transfer Setup (Dynamic Port Binding)
     current_download_dir = get_download_dir(settings)
     transfer_manager = FileTransferManager(current_download_dir, lambda t_id, pct: dbus_interface.FileProgress(t_id, float(pct)))
     dbus_interface.transfer_manager = transfer_manager
-    file_server = await transfer_manager.start_server('0.0.0.0', LISTEN_PORT)
+    file_server = await transfer_manager.start_server('0.0.0.0', 0)
+    file_port = file_server.sockets[0].getsockname()[1]
 
     # Settings Listener
     settings.connect('changed::download-dir', lambda s, k: setattr(transfer_manager, 'download_dir', get_download_dir(s)))
 
-    # Screen Share Setup
+    # Screen Share Setup (Dynamic Port Binding)
     screen_share = ScreenShareManager(lambda p_id: dbus_interface.IncomingScreenShare(p_id))
     dbus_interface.screen_share = screen_share
-    webrtc_server = await screen_share.start_signaling_server('0.0.0.0')
+    webrtc_server = await screen_share.start_signaling_server('0.0.0.0', 0)
+    screen_port = webrtc_server.sockets[0].getsockname()[1]
 
     # mDNS Discovery
     aio_zc = AsyncZeroconf()
-    # ... (rest of mDNS logic from previous versions) ...
+    local_ip = get_local_ip()
     
-    # Discovery Start
+    # Broadcast service presence with dynamic ports
+    service_info = AsyncServiceInfo(
+        SERVICE_TYPE, f"{MY_PEER_ID}.{SERVICE_TYPE}",
+        addresses=[socket.inet_aton(local_ip)], 
+        port=file_port,
+        properties={
+            'name': MY_NAME.encode('utf-8'),
+            'screen_port': str(screen_port).encode('utf-8')
+        }
+    )
+    
+    await aio_zc.async_register_service(service_info)
+    
+    # Attach to D-Bus interface so Quick Settings can pause/resume discovery
+    dbus_interface.zeroconf = aio_zc
+    dbus_interface.service_info = service_info
+    
     def on_peer_discovered(peer_data: Dict[str, Any]):
         dbus_interface.register_peer(peer_data)
 
@@ -90,6 +116,7 @@ async def main() -> None:
     try:
         await asyncio.Future() 
     finally:
+        await aio_zc.async_unregister_service(service_info)
         await aio_zc.async_close()
 
 if __name__ == '__main__':

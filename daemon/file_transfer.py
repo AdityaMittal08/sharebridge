@@ -45,9 +45,25 @@ class FileTransferManager:
             safe_filename = os.path.basename(filename)
             save_path = os.path.join(self.download_dir, safe_filename)
             
+            # 3. Request User Consent via Native Dialog
+            size_mb = total_size / (1024 * 1024)
+            proc = await asyncio.create_subprocess_exec(
+                'zenity', '--question',
+                '--title=ShareBridge - Incoming File',
+                f'--text=Do you want to accept "{safe_filename}" ({size_mb:.2f} MB)?',
+                '--width=350'
+            )
+            await proc.wait()
+            
+            if proc.returncode != 0:
+                print(f"[FileTransfer] Transfer of {safe_filename} rejected by user.")
+                writer.write(b'REJECT')
+                await writer.drain()
+                return
+
             print(f"[FileTransfer] Receiving {safe_filename} ({total_size} bytes)")
 
-            # 3. Read File Chunks and compute SHA-256 on the fly
+            # 4. Read File Chunks and compute SHA-256 on the fly
             received_size = 0
             sha256_hash = hashlib.sha256()
             
@@ -64,7 +80,7 @@ class FileTransferManager:
                     percent = (received_size / total_size) * 100
                     self.progress_callback(transfer_id, percent)
 
-            # 4. Verify Integrity against the sender's hash
+            # 5. Verify Integrity against the sender's hash
             calculated_hash = sha256_hash.hexdigest()
             if calculated_hash == header['sha256']:
                 print(f"[FileTransfer] Success: {safe_filename} verified.")
@@ -122,7 +138,7 @@ class FileTransferManager:
             writer.write(header)
             await writer.drain()
 
-            # 2. Stream File Chunks
+            # 2. Stream File Chunks (The receiver will buffer until user accepts/rejects)
             sent_size = 0
             with open(file_path, 'rb') as f:
                 while chunk := f.read(CHUNK_SIZE):
@@ -134,10 +150,13 @@ class FileTransferManager:
                     percent = (sent_size / filesize) * 100
                     self.progress_callback(transfer_id, percent)
 
-            # 3. Wait for remote peer to verify the hash
+            # 3. Wait for remote peer to verify the hash or reject
             status = await reader.read(1024)
             if status == b'OK':
                 print(f"[FileTransfer] Transfer {transfer_id} completed and verified.")
+            elif status == b'REJECT':
+                print(f"[FileTransfer] Remote peer rejected the transfer.")
+                self.progress_callback(transfer_id, 0) # Trigger failure reset
             else:
                 print(f"[FileTransfer] Remote peer rejected the transfer (Hash mismatch).")
 

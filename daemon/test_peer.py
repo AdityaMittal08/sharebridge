@@ -35,7 +35,10 @@ async def main():
     service_info = AsyncServiceInfo(
         SERVICE_TYPE, f"device-test-peer-001.{SERVICE_TYPE}",
         addresses=[socket.inet_aton('127.0.0.1')], port=LISTEN_PORT,
-        properties={'name': b'Test Laptop'}
+        properties={
+            'name': b'Test Laptop',
+            'screen_port': str(SIGNALING_PORT).encode('utf-8')
+        }
     )
     
     await aio_zc.async_register_service(service_info)

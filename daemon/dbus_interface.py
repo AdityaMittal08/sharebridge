@@ -15,6 +15,11 @@ class ShareBridgeDaemonInterface(ServiceInterface):
         
         self.transfer_manager: Optional[FileTransferManager] = None
         self.screen_share: Optional[ScreenShareManager] = None
+        
+        # State tracking for GNOME Quick Settings Toggle
+        self.zeroconf = None
+        self.service_info = None
+        self.is_paused = False
 
     @method()
     def GetPeers(self) -> 's': # type: ignore
@@ -40,14 +45,10 @@ class ShareBridgeDaemonInterface(ServiceInterface):
     def SendFile(self, peer_id: 's', file_path: 's') -> 's': # type: ignore
         if peer_id not in self.peers or not self.transfer_manager: return "ERROR"
         
-        # Generate the UUID for the frontend
         transfer_id = str(uuid.uuid4())
         
         async def run_transfer():
-            # Yield to the event loop so DBus can send the transfer_id back to the 
-            # GNOME frontend BEFORE we start emitting progress signals.
             await asyncio.sleep(0.1) 
-            
             await self.transfer_manager.send_file(
                 self.peers[peer_id]['ip'], 
                 self.peers[peer_id]['port'], 
@@ -61,8 +62,10 @@ class ShareBridgeDaemonInterface(ServiceInterface):
     @method()
     def StartScreenShare(self, peer_id: 's') -> 'b': # type: ignore
         if peer_id not in self.peers or not self.screen_share: return False
+        
+        target = self.peers[peer_id]
         asyncio.get_running_loop().create_task(
-            self.screen_share.start_broadcasting(self.peers[peer_id]['ip'], self.my_peer_id)
+            self.screen_share.start_broadcasting(target['ip'], target.get('screen_port', 49155), self.my_peer_id)
         )
         return True
 
@@ -72,8 +75,26 @@ class ShareBridgeDaemonInterface(ServiceInterface):
             self.screen_share.stop_stream()
         return True
 
+    @method()
+    def PauseDiscovery(self) -> 'b': # type: ignore
+        if not self.is_paused and self.zeroconf and self.service_info:
+            asyncio.get_running_loop().create_task(self.zeroconf.async_unregister_service(self.service_info))
+            self.is_paused = True
+            
+            # Flush the current peer list
+            for peer_id in list(self.peers.keys()):
+                self.unregister_peer(peer_id)
+        return True
+
+    @method()
+    def ResumeDiscovery(self) -> 'b': # type: ignore
+        if self.is_paused and self.zeroconf and self.service_info:
+            asyncio.get_running_loop().create_task(self.zeroconf.async_register_service(self.service_info))
+            self.is_paused = False
+        return True
+
     def register_peer(self, peer_data: Dict[str, Any]) -> None:
-        if peer_data['id'] not in self.peers:
+        if peer_data['id'] not in self.peers and not self.is_paused:
             self.peers[peer_data['id']] = peer_data
             self.PeerDiscovered(json.dumps(peer_data))
 

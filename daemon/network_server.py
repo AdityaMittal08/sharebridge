@@ -1,7 +1,7 @@
 # daemon/network_server.py
 """
 mDNS Network Discovery for ShareBridge.
-Listens for peers and safely extracts their E2EE Public Keys asynchronously.
+Listens for peers and safely extracts their ports dynamically.
 """
 import socket
 import asyncio
@@ -21,7 +21,6 @@ class PeerListener:
         self.loop.create_task(self._resolve_service(zc, type_, name))
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        # THE FIX: If a peer restarts with a new key, resolve it again!
         self.loop.create_task(self._resolve_service(zc, type_, name))
 
     async def _resolve_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -34,9 +33,9 @@ class PeerListener:
             peer_data = {
                 'id': name.replace(f'.{type_}', ''),
                 'ip': socket.inet_ntoa(info.addresses[0]),
-                'port': info.port,
-                'name': props.get('name', 'Unknown Device'),
-                'pub_key': props.get('pub_key', None)
+                'port': info.port, # Primary port (File Transfer)
+                'screen_port': int(props.get('screen_port', 49155)), # Extracted WebRTC port
+                'name': props.get('name', 'Unknown Device')
             }
             self.on_add(peer_data)
 

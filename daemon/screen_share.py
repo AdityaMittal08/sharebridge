@@ -229,9 +229,9 @@ class ScreenShareManager:
         self.webrtcbin.connect('pad-added', on_pad_added)
         self.pipeline.set_state(Gst.State.PLAYING)
 
-    async def start_broadcasting(self, target_ip: str, my_peer_id: str) -> bool:
+    # ... (Replace your existing start_broadcasting method with this one) ...
+    async def start_broadcasting(self, target_ip: str, target_port: int, my_peer_id: str) -> bool:
         self._cleanup()
-        target_port = 49157 if target_ip == '127.0.0.1' else SIGNALING_PORT
         
         try:
             print("[Portal] Requesting screen access from Wayland...")
@@ -242,7 +242,7 @@ class ScreenShareManager:
             
             print(f"[WebRTC] Connecting to {target_ip}:{target_port} to broadcast screen {node_id} via FD {fd}...")
             
-            # THE FIX: Upgraded vp8enc parameters for high-definition, low-latency streaming
+            # Upgraded vp8enc parameters for high-definition, low-latency streaming
             pipeline_str = (
                 f"pipewiresrc fd={fd} path={node_id} do-timestamp=true ! videoconvert ! "
                 "vp8enc deadline=1 target-bitrate=5000000 cpu-used=4 end-usage=cbr threads=4 ! "
