@@ -24,7 +24,7 @@ sudo apt install python3-venv python3-pip python3-gi python3-gi-cairo zenity gir
 ```
 
 
-**Installation**
+## Installation
 Clone this repository and run the automated install script. This script will package the extension, place it in your local GNOME extensions directory, compile the schemas, and build the required Python virtual environment safely linked to your system packages.
 
 
@@ -35,12 +35,12 @@ chmod +x install.sh
 ./install.sh
 ```
 
-**Activation**
+## Activation
 Restart GNOME Shell:
 
-* Wayland: Log out of your user session and log back in.
+* **Wayland:** Log out of your user session and log back in.
 
-* X11: Press Alt + F2, type r, and press Enter.
+* **X11:** Press Alt + F2, type r, and press Enter.
 
 Enable the Extension: Open the Extensions app and toggle ShareBridge on, or run this command:
 
@@ -49,10 +49,10 @@ gnome-extensions enable sharebridge@adishare.com
 ```
 
 
-**Configuration**
+## Configuration
 By default, files are downloaded to ~/Downloads/ShareBridge. You can change the download directory by opening the GNOME Extensions app, clicking the gear icon next to ShareBridge, and specifying a new absolute path.
 
 
-**Contributing**
+## Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the issues page if you want to contribute to this open-source project.
 
