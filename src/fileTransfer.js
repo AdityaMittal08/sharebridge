@@ -1,6 +1,7 @@
 // src/fileTransfer.js
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 /**
  * Opens a native file picker dialog and returns the selected file path.
@@ -29,7 +30,8 @@ export async function pickFile() {
                 }
             });
         } catch (e) {
-            console.error(`[ShareBridge] Failed to launch file picker: ${e.message}`);
+            console.error(`[ShareBridge] Failed to launch file picker (Is zenity installed?): ${e.message}`);
+            Main.notify('ShareBridge Error', 'Failed to launch file picker. Please ensure "zenity" is installed.');
             resolve(null);
         }
     });

@@ -5,21 +5,23 @@ from typing import Dict, Any, Optional
 from dbus_next.service import ServiceInterface, method, signal
 from file_transfer import FileTransferManager
 from screen_share import ScreenShareManager
-import uuid
+from zeroconf.asyncio import AsyncServiceBrowser
 
 class ShareBridgeDaemonInterface(ServiceInterface):
     def __init__(self, name: str, my_peer_id: str):
         super().__init__(name)
         self.my_peer_id = my_peer_id
         self.peers: Dict[str, Dict[str, Any]] = {}
-        
         self.transfer_manager: Optional[FileTransferManager] = None
         self.screen_share: Optional[ScreenShareManager] = None
-        
-        # State tracking for GNOME Quick Settings Toggle
         self.zeroconf = None
         self.service_info = None
         self.is_paused = False
+        self.stop_event: Optional[asyncio.Event] = None
+        
+        # New: Track the browser and listener
+        self.browser: Optional[AsyncServiceBrowser] = None
+        self.listener = None
 
     @method()
     def GetPeers(self) -> 's': # type: ignore
@@ -42,13 +44,10 @@ class ShareBridgeDaemonInterface(ServiceInterface):
         return peer_id
 
     @method()
-    def SendFile(self, peer_id: 's', file_path: 's') -> 's': # type: ignore
-        if peer_id not in self.peers or not self.transfer_manager: return "ERROR"
-        
-        transfer_id = str(uuid.uuid4())
+    def SendFile(self, peer_id: 's', file_path: 's', transfer_id: 's') -> 'b': # type: ignore
+        if peer_id not in self.peers or not self.transfer_manager: return False
         
         async def run_transfer():
-            await asyncio.sleep(0.1) 
             await self.transfer_manager.send_file(
                 self.peers[peer_id]['ip'], 
                 self.peers[peer_id]['port'], 
@@ -57,12 +56,11 @@ class ShareBridgeDaemonInterface(ServiceInterface):
             )
 
         asyncio.get_running_loop().create_task(run_transfer())
-        return transfer_id
+        return True
 
     @method()
     def StartScreenShare(self, peer_id: 's') -> 'b': # type: ignore
         if peer_id not in self.peers or not self.screen_share: return False
-        
         target = self.peers[peer_id]
         asyncio.get_running_loop().create_task(
             self.screen_share.start_broadcasting(target['ip'], target.get('screen_port', 49155), self.my_peer_id)
@@ -81,7 +79,11 @@ class ShareBridgeDaemonInterface(ServiceInterface):
             asyncio.get_running_loop().create_task(self.zeroconf.async_unregister_service(self.service_info))
             self.is_paused = True
             
-            # Flush the current peer list
+            # Kill the scanner so it stops caching peers
+            if self.browser:
+                self.browser.cancel()
+                self.browser = None
+
             for peer_id in list(self.peers.keys()):
                 self.unregister_peer(peer_id)
         return True
@@ -91,6 +93,16 @@ class ShareBridgeDaemonInterface(ServiceInterface):
         if self.is_paused and self.zeroconf and self.service_info:
             asyncio.get_running_loop().create_task(self.zeroconf.async_register_service(self.service_info))
             self.is_paused = False
+            
+            # Restart the scanner to force a fresh network query
+            if self.listener:
+                self.browser = AsyncServiceBrowser(self.zeroconf.zeroconf, "_sharebridge._tcp.local.", self.listener)
+        return True
+
+    @method()
+    def Quit(self) -> 'b': # type: ignore
+        if self.stop_event:
+            self.stop_event.set()
         return True
 
     def register_peer(self, peer_data: Dict[str, Any]) -> None:

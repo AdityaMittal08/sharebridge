@@ -19,12 +19,10 @@ class FileTransferManager:
         os.makedirs(self.download_dir, exist_ok=True)
 
     async def start_server(self, host: str, port: int) -> asyncio.Server:
-        """Starts the TCP server to listen for incoming files."""
         server = await asyncio.start_server(self._handle_client, host, port)
         return server
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Handles an incoming file transfer asynchronously."""
         addr = writer.get_extra_info('peername')
         print(f"[FileTransfer] Incoming connection from {addr}")
 
@@ -32,6 +30,12 @@ class FileTransferManager:
             # 1. Read Header Size (4 bytes)
             header_size_bytes = await reader.readexactly(4)
             header_size = int.from_bytes(header_size_bytes, byteorder='big')
+
+            if header_size > 10240: # 10 KB limit
+                print(f"[FileTransfer] Security Alert: Rejected connection from {addr} (Header size {header_size} exceeds 10KB limit)")
+                writer.close()
+                await writer.wait_closed()
+                return
 
             # 2. Read Header JSON
             header_bytes = await reader.readexactly(header_size)
@@ -41,25 +45,36 @@ class FileTransferManager:
             total_size = header['filesize']
             transfer_id = header['transfer_id']
             
-            # Prevent directory traversal attacks by securing the filename
             safe_filename = os.path.basename(filename)
             save_path = os.path.join(self.download_dir, safe_filename)
             
             # 3. Request User Consent via Native Dialog
             size_mb = total_size / (1024 * 1024)
-            proc = await asyncio.create_subprocess_exec(
-                'zenity', '--question',
-                '--title=ShareBridge - Incoming File',
-                f'--text=Do you want to accept "{safe_filename}" ({size_mb:.2f} MB)?',
-                '--width=350'
-            )
-            await proc.wait()
-            
-            if proc.returncode != 0:
-                print(f"[FileTransfer] Transfer of {safe_filename} rejected by user.")
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    'zenity', '--question',
+                    '--title=ShareBridge - Incoming File',
+                    f'--text=Do you want to accept "{safe_filename}" ({size_mb:.2f} MB)?',
+                    '--width=350'
+                )
+                await proc.wait()
+                
+                if proc.returncode != 0:
+                    print(f"[FileTransfer] Transfer of {safe_filename} rejected by user.")
+                    writer.write(b'REJECT')
+                    await writer.drain()
+                    return
+            except FileNotFoundError:
+                print("[FileTransfer] Warning: zenity is not installed. Auto-accepting file, but user should install zenity.")
+            except Exception as e:
+                print(f"[FileTransfer] Failed to show dialog: {e}")
                 writer.write(b'REJECT')
                 await writer.drain()
                 return
+
+            # --- FIX: Send the ACCEPT signal back to the sender so they can start streaming ---
+            writer.write(b'ACCEPT')
+            await writer.drain()
 
             print(f"[FileTransfer] Receiving {safe_filename} ({total_size} bytes)")
 
@@ -76,9 +91,7 @@ class FileTransferManager:
                     sha256_hash.update(chunk)
                     received_size += len(chunk)
                     
-                    # Report progress back to the GNOME UI
-                    percent = (received_size / total_size) * 100
-                    self.progress_callback(transfer_id, percent)
+                    self.progress_callback(transfer_id, (received_size / total_size) * 100)
 
             # 5. Verify Integrity against the sender's hash
             calculated_hash = sha256_hash.hexdigest()
@@ -99,7 +112,6 @@ class FileTransferManager:
             await writer.wait_closed()
 
     async def send_file(self, target_ip: str, target_port: int, file_path: str, transfer_id: str = None) -> str:
-        """Sends a file to a target peer over a raw TCP socket."""
         if not transfer_id:
             transfer_id = str(uuid.uuid4())
             
@@ -109,10 +121,7 @@ class FileTransferManager:
 
         filesize = os.path.getsize(file_path)
         filename = os.path.basename(file_path)
-
-        print(f"[FileTransfer] Calculating hash for {filename}...")
         
-        # Offload hashing to a thread to prevent blocking the asyncio event loop
         def calc_hash():
             sha256_hash = hashlib.sha256()
             with open(file_path, "rb") as f:
@@ -138,27 +147,39 @@ class FileTransferManager:
             writer.write(header)
             await writer.drain()
 
-            # 2. Stream File Chunks (The receiver will buffer until user accepts/rejects)
+            # --- FIX: Wait for receiver consent BEFORE streaming the heavy file chunks ---
+            print(f"[FileTransfer] Waiting for {target_ip} to accept the transfer...")
+            consent = await reader.read(6) # Read exactly 'ACCEPT' or 'REJECT'
+            
+            if consent == b'REJECT':
+                print("[FileTransfer] Remote peer rejected the transfer.")
+                self.progress_callback(transfer_id, 0)
+                writer.close()
+                await writer.wait_closed()
+                return transfer_id
+            elif consent != b'ACCEPT':
+                print(f"[FileTransfer] Unexpected consent response. Aborting.")
+                writer.close()
+                await writer.wait_closed()
+                return transfer_id
+                
+            print("[FileTransfer] Peer accepted! Starting file stream...")
+
+            # 2. Stream File Chunks safely now that we have permission
             sent_size = 0
             with open(file_path, 'rb') as f:
                 while chunk := f.read(CHUNK_SIZE):
                     writer.write(chunk)
                     await writer.drain()
                     sent_size += len(chunk)
-                    
-                    # Report progress for our own UI
-                    percent = (sent_size / filesize) * 100
-                    self.progress_callback(transfer_id, percent)
+                    self.progress_callback(transfer_id, (sent_size / filesize) * 100)
 
-            # 3. Wait for remote peer to verify the hash or reject
+            # 3. Wait for final verification
             status = await reader.read(1024)
             if status == b'OK':
                 print(f"[FileTransfer] Transfer {transfer_id} completed and verified.")
-            elif status == b'REJECT':
-                print(f"[FileTransfer] Remote peer rejected the transfer.")
-                self.progress_callback(transfer_id, 0) # Trigger failure reset
             else:
-                print(f"[FileTransfer] Remote peer rejected the transfer (Hash mismatch).")
+                print(f"[FileTransfer] Remote peer reported a hash mismatch or failure.")
 
             writer.close()
             await writer.wait_closed()

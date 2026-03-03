@@ -18,10 +18,12 @@ class PeerListener:
         self.on_remove = on_remove
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self.loop.create_task(self._resolve_service(zc, type_, name))
+        # zeroconf calls this from a background thread, so we MUST schedule it 
+        # thread-safely on the main asyncio loop to avoid crashing D-Bus.
+        asyncio.run_coroutine_threadsafe(self._resolve_service(zc, type_, name), self.loop)
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self.loop.create_task(self._resolve_service(zc, type_, name))
+        asyncio.run_coroutine_threadsafe(self._resolve_service(zc, type_, name), self.loop)
 
     async def _resolve_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         info = AsyncServiceInfo(type_, name)
@@ -37,8 +39,10 @@ class PeerListener:
                 'screen_port': int(props.get('screen_port', 49155)), # Extracted WebRTC port
                 'name': props.get('name', 'Unknown Device')
             }
+            # This is now safely running inside the main loop, so we can call the D-Bus trigger
             self.on_add(peer_data)
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         peer_id = name.replace(f'.{type_}', '')
-        self.on_remove(peer_id)
+        # Safely schedule the synchronous removal function on the main asyncio loop
+        self.loop.call_soon_threadsafe(self.on_remove, peer_id)

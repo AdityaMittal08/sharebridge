@@ -24,8 +24,7 @@ from gi.repository import Gst, GstWebRTC, GstSdp, GLib
 SIGNALING_PORT = 49155
 
 class WaylandScreenCapture:
-    """Handles the heavy 4-step D-Bus handshake with GNOME's Wayland security portal."""
-    
+    # ... [Keep your existing PORTAL_XML and Wayland handling exactly as it is] ...
     PORTAL_XML = """
     <node>
         <interface name="org.freedesktop.portal.ScreenCast">
@@ -54,7 +53,6 @@ class WaylandScreenCapture:
     """
 
     async def get_pipewire_node_id_and_fd(self) -> tuple:
-        # THE FIX: We must negotiate_unix_fd=True to receive the secure video file descriptor
         bus = await MessageBus(bus_type=BusType.SESSION, negotiate_unix_fd=True).connect()
         
         intr = Node.parse(self.PORTAL_XML)
@@ -124,13 +122,10 @@ class WaylandScreenCapture:
         # STEP 4: Extract the Isolated PipeWire File Descriptor
         fd = await screencast.call_open_pipe_wire_remote(session_handle, {})
         
-        # Unpack the UNIX FD if wrapped by dbus_next
         if hasattr(fd, 'take'):
             fd = fd.take()
 
-        print(f"[Portal] Successfully negotiated PipeWire Node ID: {node_id} on FD: {fd}")
         return node_id, fd
-
 
 class ScreenShareManager:
     def __init__(self, on_incoming_share: Callable[[str], None]):
@@ -158,7 +153,7 @@ class ScreenShareManager:
             return
 
         try: await asyncio.wait_for(future, timeout=3.0)
-        except asyncio.TimeoutError: print("[WebRTC] ICE timeout. Proceeding...")
+        except asyncio.TimeoutError: pass
         finally: webrtcbin.disconnect(handler_id)
 
     async def start_signaling_server(self, host: str, port: int = SIGNALING_PORT):
@@ -167,14 +162,33 @@ class ScreenShareManager:
         return server
 
     async def _handle_signaling(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        addr = writer.get_extra_info('peername')
         try:
             data = await reader.read(8192)
             if not data: return
                 
             payload = json.loads(data.decode('utf-8'))
             if payload.get('type') == 'offer':
-                self.on_incoming_share(payload.get('peer_id', 'Unknown'))
+                peer_id = payload.get('peer_id', 'Unknown')
+                
+                # --- SECURITY FIX: Require explicit user consent before opening video ---
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        'zenity', '--question',
+                        '--title=Incoming Screen Share',
+                        f'--text=Accept live screen broadcast from "{peer_id}"?',
+                        '--width=350'
+                    )
+                    await proc.wait()
+                    
+                    if proc.returncode != 0:
+                        print(f"[WebRTC] Rejected screen share from {peer_id}.")
+                        writer.write(json.dumps({'type': 'reject'}).encode('utf-8'))
+                        await writer.drain()
+                        return
+                except FileNotFoundError:
+                    print("[WebRTC] zenity not found. Auto-accepting stream.")
+
+                self.on_incoming_share(peer_id)
                 self._create_receiving_pipeline()
                 
                 _, sdpmsg = GstSdp.sdp_message_new()
@@ -214,10 +228,23 @@ class ScreenShareManager:
     def _create_receiving_pipeline(self):
         self._cleanup()
         print("[WebRTC] Building receiver pipeline...")
-        pipeline_str = "webrtcbin name=recvbin  rtpvp8depay name=depay ! vp8dec ! videoconvert ! autovideosink"
+        pipeline_str = "webrtcbin name=recvbin  rtpvp8depay name=depay ! vp8dec ! videoconvert ! autovideosink name=vsink"
         self.pipeline = Gst.parse_launch(pipeline_str)
         self.webrtcbin = self.pipeline.get_by_name('recvbin')
         depay = self.pipeline.get_by_name('depay')
+
+        # --- RESOURCE LEAK FIX: Watch the bus for window close events ---
+        bus = self.pipeline.get_bus()
+        bus.add_signal_watch()
+        
+        def on_bus_message(bus, message):
+            if message.type in [Gst.MessageType.EOS, Gst.MessageType.ERROR]:
+                print("[WebRTC] Video window closed or stream ended. Cleaning up resources.")
+                # We must schedule the cleanup carefully to avoid deadlock in the GLib loop
+                GLib.idle_add(self._cleanup)
+            return True
+            
+        bus.connect("message", on_bus_message)
 
         def on_pad_added(element, pad):
             if pad.get_direction() == Gst.PadDirection.SRC:
@@ -229,20 +256,16 @@ class ScreenShareManager:
         self.webrtcbin.connect('pad-added', on_pad_added)
         self.pipeline.set_state(Gst.State.PLAYING)
 
-    # ... (Replace your existing start_broadcasting method with this one) ...
     async def start_broadcasting(self, target_ip: str, target_port: int, my_peer_id: str) -> bool:
         self._cleanup()
         
         try:
             print("[Portal] Requesting screen access from Wayland...")
             portal = WaylandScreenCapture()
-            
-            # Extract BOTH the Node ID and the secure File Descriptor
             node_id, fd = await portal.get_pipewire_node_id_and_fd()
             
-            print(f"[WebRTC] Connecting to {target_ip}:{target_port} to broadcast screen {node_id} via FD {fd}...")
+            print(f"[WebRTC] Connecting to {target_ip}:{target_port} to broadcast screen...")
             
-            # Upgraded vp8enc parameters for high-definition, low-latency streaming
             pipeline_str = (
                 f"pipewiresrc fd={fd} path={node_id} do-timestamp=true ! videoconvert ! "
                 "vp8enc deadline=1 target-bitrate=5000000 cpu-used=4 end-usage=cbr threads=4 ! "
@@ -283,6 +306,15 @@ class ScreenShareManager:
             
             data = await reader.read(8192)
             response = json.loads(data.decode('utf-8'))
+            
+            # --- SECURITY FIX: Handle target rejecting the stream gracefully ---
+            if response.get('type') == 'reject':
+                print("[WebRTC] The target device rejected your screen share request.")
+                self._cleanup()
+                writer.close()
+                await writer.wait_closed()
+                return False
+                
             if response.get('type') == 'answer':
                 _, sdpmsg = GstSdp.sdp_message_new()
                 GstSdp.sdp_message_parse_buffer(bytes(response['sdp'], 'utf-8'), sdpmsg)

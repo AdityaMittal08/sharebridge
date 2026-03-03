@@ -214,22 +214,32 @@ export class SidePanel {
             if (filePath && this.daemonProxy) {
                 Main.notify('ShareBridge', `Initiating file transfer to ${peer.name}...`);
                 
+                // Pre-generate Transfer ID to fix the race condition
+                const transferId = GLib.uuid_string_random();
+                
                 const transferBox = new St.BoxLayout({ vertical: true, x_expand: true });
                 const pBg = new St.BoxLayout({ style_class: 'sb-progress-bg', x_expand: true });
-                const pFill = new St.BoxLayout({ style_class: 'sb-progress-fill' });
+                
+                // FIX: Use St.Widget instead of St.BoxLayout to prevent auto-stretching.
+                // Strictly lock the initial inline style to 0px width.
+                const pFill = new St.Widget({ style_class: 'sb-progress-fill' });
+                pFill.style = 'width: 0px; min-width: 0px; background-color: #3584e4; border-radius: 5px; height: 10px;';
                 pFill.set_width(0);
+                
                 pBg.add_child(pFill);
                 
                 transferBox.add_child(new St.Label({ text: `Sending: ${filePath.split('/').pop()}`, style: 'font-size: 0.9em; margin-top:10px;' }));
                 transferBox.add_child(pBg);
                 progressContainer.add_child(transferBox);
 
-                this.daemonProxy.SendFileRemote(targetId, filePath, (result, err) => {
+                // Track before making the RPC call
+                this.activeTransfers.set(transferId, { fill: pFill, box: transferBox });
+
+                this.daemonProxy.SendFileRemote(targetId, filePath, transferId, (result, err) => {
                     if (err) {
                         transferBox.destroy(); 
-                    } else if (result && result[0]) {
-                        const transferId = result[0];
-                        this.activeTransfers.set(transferId, { fill: pFill, box: transferBox });
+                        this.activeTransfers.delete(transferId);
+                        console.error(`[ShareBridge] Failed to send file: ${err.message}`);
                     }
                 });
             }

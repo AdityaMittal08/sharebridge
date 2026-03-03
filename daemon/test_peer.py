@@ -3,6 +3,7 @@
 import asyncio
 import socket
 import os
+import signal
 from typing import Dict, Any
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceInfo, AsyncServiceBrowser
 
@@ -19,18 +20,15 @@ async def main():
     loop = asyncio.get_running_loop()
     
     # 1. File Server
-    # Set up a dedicated directory for test peer downloads
     dl_dir = os.path.expanduser("~/Downloads/ShareBridge_Test")
     tm = FileTransferManager(dl_dir, lambda t, p: print(f"[TestPeer] File: {p:.1f}%"))
     fs = await tm.start_server('0.0.0.0', LISTEN_PORT)
     
     # 2. WebRTC Server
-    # Initialize screen sharing manager with a notification callback
     sm = ScreenShareManager(lambda p: print(f"Incoming video from {p}!"))
     ws = await sm.start_signaling_server('0.0.0.0', SIGNALING_PORT)
     
     # 3. mDNS Setup
-    # Broadcast service presence without encryption keys
     aio_zc = AsyncZeroconf()
     service_info = AsyncServiceInfo(
         SERVICE_TYPE, f"device-test-peer-001.{SERVICE_TYPE}",
@@ -42,27 +40,43 @@ async def main():
     )
     
     await aio_zc.async_register_service(service_info)
-    print("Broadcasting mDNS presence...")
+    print("Broadcasting mDNS presence... (Press Ctrl+C to stop)")
 
-    # Discover other peers on the network
     def on_peer_discovered(peer_data: Dict[str, Any]):
-        peer_id = peer_data['id']
-        print(f"[TestPeer] Discovered peer: {peer_id}")
+        print(f"[TestPeer] Discovered peer: {peer_data['id']}")
 
-    listener = PeerListener(loop, on_peer_discovered, lambda p: None)
+    listener = PeerListener(loop, on_peer_discovered, lambda p: print(f"[TestPeer] Peer lost: {p}"))
     browser = AsyncServiceBrowser(aio_zc.zeroconf, SERVICE_TYPE, listener)
 
-    try:
-        await asyncio.Future()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Graceful shutdown of servers and mDNS registration
-        fs.close()
-        ws.close()
-        await asyncio.gather(fs.wait_closed(), ws.wait_closed())
-        await aio_zc.async_unregister_service(service_info)
-        await aio_zc.async_close()
+    # 4. Graceful Shutdown Handling
+    stop_event = asyncio.Event()
+    
+    def shutdown_handler():
+        print("\n[TestPeer] Shutdown signal received, initiating graceful exit...")
+        stop_event.set()
+
+    # Intercept Ctrl+C so it sets our event INSTEAD of violently crashing asyncio
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown_handler)
+
+    # Pause execution here until Ctrl+C is pressed
+    await stop_event.wait()
+    
+    # --- CLEAN SHUTDOWN SEQUENCE ---
+    print("[TestPeer] Sending mDNS Goodbye packet...")
+    await aio_zc.async_unregister_service(service_info)
+    
+    # CRITICAL: Wait 500ms before closing zeroconf. 
+    # This gives the OS network stack enough time to flush the UDP multicast packet!
+    await asyncio.sleep(0.5) 
+    
+    await aio_zc.async_close()
+    fs.close()
+    ws.close()
+    print("[TestPeer] Stopped cleanly.")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass # Suppress any stray traceback prints

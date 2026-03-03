@@ -35,18 +35,22 @@ cp "$REPO_DIR/stylesheet.css" "$EXT_DIR/"
 echo "[3/4] Compiling GSettings schemas..."
 glib-compile-schemas "$EXT_DIR/schemas/"
 
-echo "[4/4] Setting up Python virtual environment (this may take a moment)..."
+echo "[4/4] Setting up Python virtual environment..."
 cd "$EXT_DIR/daemon"
-python3 -m venv venv
+# FIX: Use system site-packages so we don't need to compile PyGObject and pycairo
+python3 -m venv --system-site-packages venv
 
 source venv/bin/activate
-pip install --upgrade pip setuptools wheel > /dev/null 2>&1
+pip install --upgrade pip > /dev/null 2>&1
 pip install -r requirements.txt
 deactivate
 
 echo "======================================================="
 echo " Installation Complete!"
 echo "======================================================="
+echo ""
+echo "Please make sure you have the required system dependencies installed:"
+echo "  sudo apt install python3-gi python3-gi-cairo zenity gir1.2-gst-plugins-bad-1.0 gstreamer1.0-plugins-bad gstreamer1.0-nice"
 echo ""
 echo "To activate ShareBridge, please follow these steps:"
 echo "  1. Restart GNOME Shell:"

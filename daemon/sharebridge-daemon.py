@@ -107,15 +107,23 @@ async def main() -> None:
     dbus_interface.zeroconf = aio_zc
     dbus_interface.service_info = service_info
     
+    # Graceful shutdown event
+    stop_event = asyncio.Event()
+    dbus_interface.stop_event = stop_event
+    
     def on_peer_discovered(peer_data: Dict[str, Any]):
         dbus_interface.register_peer(peer_data)
 
     listener = PeerListener(loop, on_peer_discovered, dbus_interface.unregister_peer)
-    browser = AsyncServiceBrowser(aio_zc.zeroconf, SERVICE_TYPE, listener)
+    dbus_interface.listener = listener
+    dbus_interface.browser = AsyncServiceBrowser(aio_zc.zeroconf, SERVICE_TYPE, listener)
 
     try:
-        await asyncio.Future() 
+        await stop_event.wait() 
     finally:
+        print("[Daemon] Shutting down cleanly...")
+        if dbus_interface.browser:
+            dbus_interface.browser.cancel()
         await aio_zc.async_unregister_service(service_info)
         await aio_zc.async_close()
 

@@ -12,7 +12,10 @@ const DBUS_INTERFACE_XML = `
   <interface name="org.gnome.shell.extensions.sharebridge.Daemon">
     <method name="GetPeers"><arg type="s" name="peers_json" direction="out"/></method>
     <method name="SendFile">
-      <arg type="s" name="peer_id" direction="in"/><arg type="s" name="file_path" direction="in"/><arg type="s" name="transfer_id" direction="out"/>
+      <arg type="s" name="peer_id" direction="in"/>
+      <arg type="s" name="file_path" direction="in"/>
+      <arg type="s" name="transfer_id" direction="in"/>
+      <arg type="b" name="success" direction="out"/>
     </method>
     <method name="StartScreenShare">
       <arg type="s" name="peer_id" direction="in"/><arg type="b" name="success" direction="out"/>
@@ -24,6 +27,9 @@ const DBUS_INTERFACE_XML = `
       <arg type="b" name="success" direction="out"/>
     </method>
     <method name="ResumeDiscovery">
+      <arg type="b" name="success" direction="out"/>
+    </method>
+    <method name="Quit">
       <arg type="b" name="success" direction="out"/>
     </method>
     <signal name="PeerDiscovered"><arg type="s" name="peer_json"/></signal>
@@ -126,6 +132,12 @@ export default class ShareBridgeExtension extends Extension {
         if (this._daemonProxy) {
             this._signalIds.forEach(id => this._daemonProxy.disconnectSignal(id));
             this._signalIds = [];
+            
+            // Cleanly shutdown daemon via D-Bus
+            try {
+                this._daemonProxy.QuitRemote(() => {});
+            } catch (e) {}
+
             this._daemonProxy = null;
         }
         if (this._indicator) {
@@ -149,16 +161,14 @@ export default class ShareBridgeExtension extends Extension {
 
             this._daemonProc = Gio.Subprocess.new(
                 [pythonExec, '-u', daemonPath],
-                0
+                Gio.SubprocessFlags.NONE
             );
             
             this._daemonProc.wait_check_async(null, (proc, res) => {
                 try {
-                    if (!proc.wait_check_finish(res)) {
-                        Main.notify('ShareBridge Error', 'Daemon exited unexpectedly. Check your terminal dependencies.');
-                    }
+                    proc.wait_check_finish(res);
                 } catch (e) {
-                    Main.notify('ShareBridge Error', `Daemon crashed: ${e.message}`);
+                    // Normal behavior if killed cleanly or extension disabled
                 }
             });
             
@@ -171,9 +181,15 @@ export default class ShareBridgeExtension extends Extension {
 
     _stopDaemon() {
         if (this._daemonProc) {
-            this._daemonProc.force_exit();
-            this._daemonProc = null;
-            console.log('[ShareBridge] Daemon stopped.');
+            // Give the daemon a moment to process the D-Bus Quit command before forcing
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                if (this._daemonProc) {
+                    try { this._daemonProc.force_exit(); } catch (e) {}
+                    this._daemonProc = null;
+                }
+                return GLib.SOURCE_REMOVE;
+            });
+            console.log('[ShareBridge] Stop sequence initiated.');
         }
     }
 
