@@ -8,7 +8,6 @@ import sys
 import gi
 from typing import Dict, Any
 from dbus_next.aio import MessageBus
-from zeroconf.asyncio import AsyncZeroconf, AsyncServiceInfo, AsyncServiceBrowser
 
 gi.require_version('Gio', '2.0')
 from gi.repository import Gio
@@ -34,12 +33,18 @@ else:
         sys.exit(1)
 
 from dbus_interface import ShareBridgeDaemonInterface
-from network_server import PeerListener, SERVICE_TYPE
+from network_server import SignalingClient
 from file_transfer import FileTransferManager
 from screen_share import ScreenShareManager
 
 MY_PEER_ID = f"device-{uuid.getnode()}"
 MY_NAME = os.getlogin().capitalize()
+
+# =====================================================================
+# IMPORTANT: Change this to the IP address of the laptop running server.py!
+# If deployed on the web, it will look like "wss://your-app.onrender.com"
+# =====================================================================
+SIGNALING_SERVER_URL = ""
 
 def get_download_dir(settings_obj) -> str:
     path = settings_obj.get_string("download-dir")
@@ -49,7 +54,6 @@ def get_download_dir(settings_obj) -> str:
     return path
 
 def get_local_ip():
-    """Helper to get the primary local IP address."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('10.255.255.255', 1))
@@ -61,7 +65,7 @@ def get_local_ip():
     return IP
 
 async def main() -> None:
-    print("[Daemon] Starting ShareBridge Daemon...")
+    print("[Daemon] Starting ShareBridge Daemon (WebSocket Mode)...")
     loop = asyncio.get_running_loop()
 
     # D-Bus Setup
@@ -70,62 +74,50 @@ async def main() -> None:
     bus.export('/org/gnome/shell/extensions/sharebridge/Daemon', dbus_interface)
     await bus.request_name('org.gnome.shell.extensions.sharebridge')
 
-    # File Transfer Setup (Dynamic Port Binding)
+    # File Transfer Setup
     current_download_dir = get_download_dir(settings)
     transfer_manager = FileTransferManager(current_download_dir, lambda t_id, pct: dbus_interface.FileProgress(t_id, float(pct)))
     dbus_interface.transfer_manager = transfer_manager
     file_server = await transfer_manager.start_server('0.0.0.0', 0)
     file_port = file_server.sockets[0].getsockname()[1]
 
-    # Settings Listener
     settings.connect('changed::download-dir', lambda s, k: setattr(transfer_manager, 'download_dir', get_download_dir(s)))
 
-    # Screen Share Setup (Dynamic Port Binding)
+    # Screen Share Setup
     screen_share = ScreenShareManager(lambda p_id: dbus_interface.IncomingScreenShare(p_id))
     dbus_interface.screen_share = screen_share
     webrtc_server = await screen_share.start_signaling_server('0.0.0.0', 0)
     screen_port = webrtc_server.sockets[0].getsockname()[1]
 
-    # mDNS Discovery
-    aio_zc = AsyncZeroconf()
     local_ip = get_local_ip()
-    
-    # Broadcast service presence with dynamic ports
-    service_info = AsyncServiceInfo(
-        SERVICE_TYPE, f"{MY_PEER_ID}.{SERVICE_TYPE}",
-        addresses=[socket.inet_aton(local_ip)], 
-        port=file_port,
-        properties={
-            'name': MY_NAME.encode('utf-8'),
-            'screen_port': str(screen_port).encode('utf-8')
-        }
-    )
-    
-    await aio_zc.async_register_service(service_info)
-    
-    # Attach to D-Bus interface so Quick Settings can pause/resume discovery
-    dbus_interface.zeroconf = aio_zc
-    dbus_interface.service_info = service_info
-    
-    # Graceful shutdown event
-    stop_event = asyncio.Event()
-    dbus_interface.stop_event = stop_event
-    
+
     def on_peer_discovered(peer_data: Dict[str, Any]):
         dbus_interface.register_peer(peer_data)
 
-    listener = PeerListener(loop, on_peer_discovered, dbus_interface.unregister_peer)
-    dbus_interface.listener = listener
-    dbus_interface.browser = AsyncServiceBrowser(aio_zc.zeroconf, SERVICE_TYPE, listener)
+    # Initialize and start the WebSocket Signaling Client
+    signaling_client = SignalingClient(
+        server_url=SIGNALING_SERVER_URL,
+        my_peer_id=MY_PEER_ID,
+        my_name=MY_NAME,
+        local_ip=local_ip,
+        file_port=file_port,
+        screen_port=screen_port,
+        on_add=on_peer_discovered,
+        on_remove=dbus_interface.unregister_peer
+    )
+    
+    dbus_interface.signaling_client = signaling_client
+    signaling_client.start()
+
+    # Graceful shutdown event
+    stop_event = asyncio.Event()
+    dbus_interface.stop_event = stop_event
 
     try:
         await stop_event.wait() 
     finally:
         print("[Daemon] Shutting down cleanly...")
-        if dbus_interface.browser:
-            dbus_interface.browser.cancel()
-        await aio_zc.async_unregister_service(service_info)
-        await aio_zc.async_close()
+        signaling_client.stop()
 
 if __name__ == '__main__':
     asyncio.run(main())

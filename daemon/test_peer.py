@@ -5,48 +5,64 @@ import socket
 import os
 import signal
 from typing import Dict, Any
-from zeroconf.asyncio import AsyncZeroconf, AsyncServiceInfo, AsyncServiceBrowser
 
 from file_transfer import FileTransferManager
 from screen_share import ScreenShareManager
-from network_server import PeerListener
+from network_server import SignalingClient
 
-SERVICE_TYPE = "_sharebridge._tcp.local."
-LISTEN_PORT = 49153
-SIGNALING_PORT = 49157
+# =====================================================================
+# IMPORTANT: Change this to your Render WebSocket URL!
+# =====================================================================
+SIGNALING_SERVER_URL = ""
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
 async def main():
-    print("--- SHAREBRIDGE TEST PEER ---")
+    print("--- SHAREBRIDGE TEST PEER (WEBSOCKET MODE) ---")
     loop = asyncio.get_running_loop()
     
-    # 1. File Server
+    # 1. File Server (Dynamic Port)
     dl_dir = os.path.expanduser("~/Downloads/ShareBridge_Test")
     tm = FileTransferManager(dl_dir, lambda t, p: print(f"[TestPeer] File: {p:.1f}%"))
-    fs = await tm.start_server('0.0.0.0', LISTEN_PORT)
+    fs = await tm.start_server('0.0.0.0', 0)
+    file_port = fs.sockets[0].getsockname()[1]
     
-    # 2. WebRTC Server
+    # 2. WebRTC Server (Dynamic Port)
     sm = ScreenShareManager(lambda p: print(f"Incoming video from {p}!"))
-    ws = await sm.start_signaling_server('0.0.0.0', SIGNALING_PORT)
+    ws = await sm.start_signaling_server('0.0.0.0', 0)
+    screen_port = ws.sockets[0].getsockname()[1]
     
-    # 3. mDNS Setup
-    aio_zc = AsyncZeroconf()
-    service_info = AsyncServiceInfo(
-        SERVICE_TYPE, f"device-test-peer-001.{SERVICE_TYPE}",
-        addresses=[socket.inet_aton('127.0.0.1')], port=LISTEN_PORT,
-        properties={
-            'name': b'Test Laptop',
-            'screen_port': str(SIGNALING_PORT).encode('utf-8')
-        }
-    )
-    
-    await aio_zc.async_register_service(service_info)
-    print("Broadcasting mDNS presence... (Press Ctrl+C to stop)")
+    local_ip = get_local_ip()
 
     def on_peer_discovered(peer_data: Dict[str, Any]):
-        print(f"[TestPeer] Discovered peer: {peer_data['id']}")
+        print(f"[TestPeer] Discovered peer: {peer_data['id']} ({peer_data['name']}) at {peer_data['ip']}")
 
-    listener = PeerListener(loop, on_peer_discovered, lambda p: print(f"[TestPeer] Peer lost: {p}"))
-    browser = AsyncServiceBrowser(aio_zc.zeroconf, SERVICE_TYPE, listener)
+    def on_peer_lost(peer_id: str):
+        print(f"[TestPeer] Peer lost: {peer_id}")
+
+    # 3. WebSocket Matchmaker Setup
+    print(f"[TestPeer] Connecting to Matchmaker at {SIGNALING_SERVER_URL}...")
+    signaling_client = SignalingClient(
+        server_url=SIGNALING_SERVER_URL,
+        my_peer_id="device-test-peer-001",
+        my_name="Test Laptop",
+        local_ip=local_ip,
+        file_port=file_port,
+        screen_port=screen_port,
+        on_add=on_peer_discovered,
+        on_remove=on_peer_lost
+    )
+    
+    signaling_client.start()
 
     # 4. Graceful Shutdown Handling
     stop_event = asyncio.Event()
@@ -63,14 +79,12 @@ async def main():
     await stop_event.wait()
     
     # --- CLEAN SHUTDOWN SEQUENCE ---
-    print("[TestPeer] Sending mDNS Goodbye packet...")
-    await aio_zc.async_unregister_service(service_info)
+    print("[TestPeer] Disconnecting from signaling server...")
+    signaling_client.stop()
     
-    # CRITICAL: Wait 500ms before closing zeroconf. 
-    # This gives the OS network stack enough time to flush the UDP multicast packet!
+    # Give asyncio a moment to flush the websocket closure
     await asyncio.sleep(0.5) 
     
-    await aio_zc.async_close()
     fs.close()
     ws.close()
     print("[TestPeer] Stopped cleanly.")

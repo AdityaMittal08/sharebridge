@@ -1,48 +1,97 @@
 # daemon/network_server.py
 """
-mDNS Network Discovery for ShareBridge.
-Listens for peers and safely extracts their ports dynamically.
+WebSocket Network Discovery for ShareBridge.
+Replaces mDNS to bypass enterprise AP Isolation.
 """
-import socket
 import asyncio
+import json
+import websockets
 from typing import Callable, Dict, Any
-from zeroconf import Zeroconf
-from zeroconf.asyncio import AsyncServiceInfo
 
-SERVICE_TYPE = "_sharebridge._tcp.local."
-
-class PeerListener:
-    def __init__(self, loop: asyncio.AbstractEventLoop, on_add: Callable[[Dict[str, Any]], None], on_remove: Callable[[str], None]):
-        self.loop = loop
+class SignalingClient:
+    def __init__(self, server_url: str, my_peer_id: str, my_name: str, local_ip: str, file_port: int, screen_port: int, on_add: Callable[[Dict[str, Any]], None], on_remove: Callable[[str], None]):
+        self.server_url = server_url
+        self.my_peer_id = my_peer_id
+        self.my_name = my_name
+        self.local_ip = local_ip
+        self.file_port = file_port
+        self.screen_port = screen_port
         self.on_add = on_add
         self.on_remove = on_remove
-
-    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        # zeroconf calls this from a background thread, so we MUST schedule it 
-        # thread-safely on the main asyncio loop to avoid crashing D-Bus.
-        asyncio.run_coroutine_threadsafe(self._resolve_service(zc, type_, name), self.loop)
-
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        asyncio.run_coroutine_threadsafe(self._resolve_service(zc, type_, name), self.loop)
-
-    async def _resolve_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = AsyncServiceInfo(type_, name)
-        await info.async_request(zc, 3000)
         
-        if info and info.addresses:
-            props = {k.decode('utf-8'): v.decode('utf-8') for k, v in info.properties.items() if v is not None}
-            
-            peer_data = {
-                'id': name.replace(f'.{type_}', ''),
-                'ip': socket.inet_ntoa(info.addresses[0]),
-                'port': info.port, # Primary port (File Transfer)
-                'screen_port': int(props.get('screen_port', 49155)), # Extracted WebRTC port
-                'name': props.get('name', 'Unknown Device')
-            }
-            # This is now safely running inside the main loop, so we can call the D-Bus trigger
-            self.on_add(peer_data)
+        self.ws = None
+        self.running = False
+        self.task = None
+        self.known_peers = set()
 
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        peer_id = name.replace(f'.{type_}', '')
-        # Safely schedule the synchronous removal function on the main asyncio loop
-        self.loop.call_soon_threadsafe(self.on_remove, peer_id)
+    def start(self):
+        self.running = True
+        self.task = asyncio.create_task(self._connect_loop())
+
+    def stop(self):
+        self.running = False
+        if self.task:
+            self.task.cancel()
+        if self.ws:
+            asyncio.create_task(self.ws.close())
+        
+        # Clear peers from the UI
+        for old_id in list(self.known_peers):
+            self.on_remove(old_id)
+        self.known_peers.clear()
+
+    async def _connect_loop(self):
+        while self.running:
+            try:
+                async with websockets.connect(self.server_url) as ws:
+                    self.ws = ws
+                    print(f"[Signaling] Connected to matchmaker: {self.server_url}")
+                    
+                    # Register this device
+                    reg_msg = {
+                        "type": "register",
+                        "peer_id": self.my_peer_id,
+                        "name": self.my_name,
+                        "local_ip": self.local_ip,
+                        "file_port": self.file_port,
+                        "screen_port": self.screen_port
+                    }
+                    await ws.send(json.dumps(reg_msg))
+
+                    # Listen for peer updates
+                    async for message in ws:
+                        data = json.loads(message)
+                        if data.get("type") == "peer_list":
+                            self._update_peers(data.get("peers", []))
+                            
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[Signaling] Disconnected: {e}. Retrying in 3s...")
+                await asyncio.sleep(3)
+                
+    def _update_peers(self, active_peers_data):
+        current_ids = set()
+        for p in active_peers_data:
+            if p["id"] == self.my_peer_id:
+                continue # Don't add ourselves to the UI
+            
+            current_ids.add(p["id"])
+            
+            # If it's a new peer, trigger the D-Bus signal
+            if p["id"] not in self.known_peers:
+                peer_data = {
+                    'id': p["id"],
+                    'ip': p["ip"],
+                    'port': p["file_port"],
+                    'screen_port': p["screen_port"],
+                    'name': p["name"]
+                }
+                self.on_add(peer_data)
+
+        # Remove peers that went offline
+        for old_id in list(self.known_peers):
+            if old_id not in current_ids:
+                self.on_remove(old_id)
+                
+        self.known_peers = current_ids

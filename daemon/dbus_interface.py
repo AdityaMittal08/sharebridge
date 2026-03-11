@@ -5,7 +5,6 @@ from typing import Dict, Any, Optional
 from dbus_next.service import ServiceInterface, method, signal
 from file_transfer import FileTransferManager
 from screen_share import ScreenShareManager
-from zeroconf.asyncio import AsyncServiceBrowser
 
 class ShareBridgeDaemonInterface(ServiceInterface):
     def __init__(self, name: str, my_peer_id: str):
@@ -14,14 +13,9 @@ class ShareBridgeDaemonInterface(ServiceInterface):
         self.peers: Dict[str, Dict[str, Any]] = {}
         self.transfer_manager: Optional[FileTransferManager] = None
         self.screen_share: Optional[ScreenShareManager] = None
-        self.zeroconf = None
-        self.service_info = None
+        self.signaling_client = None
         self.is_paused = False
         self.stop_event: Optional[asyncio.Event] = None
-        
-        # New: Track the browser and listener
-        self.browser: Optional[AsyncServiceBrowser] = None
-        self.listener = None
 
     @method()
     def GetPeers(self) -> 's': # type: ignore
@@ -75,28 +69,18 @@ class ShareBridgeDaemonInterface(ServiceInterface):
 
     @method()
     def PauseDiscovery(self) -> 'b': # type: ignore
-        if not self.is_paused and self.zeroconf and self.service_info:
-            asyncio.get_running_loop().create_task(self.zeroconf.async_unregister_service(self.service_info))
+        if not self.is_paused and self.signaling_client:
+            self.signaling_client.stop()
             self.is_paused = True
-            
-            # Kill the scanner so it stops caching peers
-            if self.browser:
-                self.browser.cancel()
-                self.browser = None
-
             for peer_id in list(self.peers.keys()):
                 self.unregister_peer(peer_id)
         return True
 
     @method()
     def ResumeDiscovery(self) -> 'b': # type: ignore
-        if self.is_paused and self.zeroconf and self.service_info:
-            asyncio.get_running_loop().create_task(self.zeroconf.async_register_service(self.service_info))
+        if self.is_paused and self.signaling_client:
+            self.signaling_client.start()
             self.is_paused = False
-            
-            # Restart the scanner to force a fresh network query
-            if self.listener:
-                self.browser = AsyncServiceBrowser(self.zeroconf.zeroconf, "_sharebridge._tcp.local.", self.listener)
         return True
 
     @method()
