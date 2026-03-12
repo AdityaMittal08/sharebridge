@@ -129,17 +129,27 @@ export default class ShareBridgeExtension extends Extension {
             this._sidePanel.destroy();
             this._sidePanel = null;
         }
-        if (this._daemonProxy) {
-            this._signalIds.forEach(id => this._daemonProxy.disconnectSignal(id));
-            this._signalIds = [];
-            
-            // Cleanly shutdown daemon via D-Bus
-            try {
-                this._daemonProxy.QuitRemote(() => {});
-            } catch (e) {}
+        
+        // 1. Isolate the D-Bus cleanup so failures don't block UI destruction
+        try {
+            if (this._daemonProxy) {
+                this._signalIds.forEach(id => {
+                    try { this._daemonProxy.disconnectSignal(id); } catch (e) {}
+                });
+                this._signalIds = [];
+                
+                try {
+                    this._daemonProxy.QuitRemote(() => {});
+                } catch (e) {}
 
-            this._daemonProxy = null;
+                this._daemonProxy = null;
+            }
+            this._stopDaemon();
+        } catch (error) {
+            console.error(`[ShareBridge] D-Bus shutdown error: ${error.message}`);
         }
+
+        // 2. Guarantee UI teardown happens no matter what
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
@@ -148,7 +158,6 @@ export default class ShareBridgeExtension extends Extension {
             this._quickSettings.destroy();
             this._quickSettings = null;
         }
-        this._stopDaemon();
         this._peerCount = 0;
     }
 

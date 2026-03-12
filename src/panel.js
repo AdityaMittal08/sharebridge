@@ -126,9 +126,12 @@ export class SidePanel {
         } else {
             for (const [id, peer] of this.peers.entries()) {
                 const row = new St.Button({ style_class: 'sb-peer-row', x_expand: true, reactive: true });
-                const rowContent = new St.BoxLayout({ vertical: false });
+               const rowContent = new St.BoxLayout({ vertical: false });
                 rowContent.add_child(new St.Icon({ icon_name: 'computer-symbolic', icon_size: 24, style: 'margin-right: 15px;' }));
-                rowContent.add_child(new St.Label({ text: peer.name, style_class: 'sb-peer-name', y_align: Clutter.ActorAlign.CENTER }));
+
+                // Add fallback to IP address if name is missing
+                const safeName = peer.name ? peer.name : `Unknown (${peer.ip || 'No IP'})`;
+                rowContent.add_child(new St.Label({ text: safeName, style_class: 'sb-peer-name', y_align: Clutter.ActorAlign.CENTER }));
                 
                 row.set_child(rowContent);
                 row.connect('clicked', () => this.showPeerDetail(peer));

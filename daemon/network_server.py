@@ -81,11 +81,11 @@ class SignalingClient:
             # If it's a new peer, trigger the D-Bus signal
             if p["id"] not in self.known_peers:
                 peer_data = {
-                    'id': p["id"],
-                    'ip': p["ip"],
-                    'port': p["file_port"],
-                    'screen_port': p["screen_port"],
-                    'name': p["name"]
+                    'id': p.get("id", "Unknown"),
+                    'ip': p.get("ip", "0.0.0.0"),
+                    'port': p.get("file_port", 0),
+                    'screen_port': p.get("screen_port", 49155),
+                    'name': p.get("name", "Unknown Peer") # <-- Safe extraction
                 }
                 self.on_add(peer_data)
 
