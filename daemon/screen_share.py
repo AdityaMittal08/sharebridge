@@ -133,6 +133,7 @@ class ScreenShareManager:
         self.on_incoming_share = on_incoming_share
         self.pipeline: Optional[Gst.Pipeline] = None
         self.webrtcbin: Optional[Gst.Element] = None
+        self._bus: Optional[Gst.Bus] = None
         self.glib_loop = GLib.MainLoop()
         
         self.thread = threading.Thread(target=self.glib_loop.run, daemon=True)
@@ -234,8 +235,8 @@ class ScreenShareManager:
         depay = self.pipeline.get_by_name('depay')
 
         # --- RESOURCE LEAK FIX: Watch the bus for window close events ---
-        bus = self.pipeline.get_bus()
-        bus.add_signal_watch()
+        self._bus = self.pipeline.get_bus()
+        self._bus.add_signal_watch()
         
         def on_bus_message(bus, message):
             if message.type in [Gst.MessageType.EOS, Gst.MessageType.ERROR]:
@@ -244,7 +245,7 @@ class ScreenShareManager:
                 GLib.idle_add(self._cleanup)
             return True
             
-        bus.connect("message", on_bus_message)
+        self._bus.connect("message", on_bus_message)
 
         def on_pad_added(element, pad):
             if pad.get_direction() == Gst.PadDirection.SRC:
@@ -337,6 +338,9 @@ class ScreenShareManager:
 
     def _cleanup(self):
         if self.pipeline:
+            if self._bus:
+                self._bus.remove_signal_watch()
+                self._bus = None
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             self.webrtcbin = None
